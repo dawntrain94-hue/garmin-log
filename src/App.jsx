@@ -724,26 +724,66 @@ export default function App() {
       var effectiveCourseData = Object.assign({}, courseData, {elevationGain: effectiveEleGain});
 
       var trainingIF = null, trainingIFLabel = "";
-      // 피트니스 창(6~10주) 내 파워 데이터로 IF 계산
+      var ftpN = parseFloat(profile.ftp);
+
+      // ① 파워 데이터 있으면 실측 IF 직접 계산 (가장 정확)
       var pwrActs = fitnessActs.filter(function(a){return a.avgPower&&a.durationMin>=30;});
       if (pwrActs.length >= 2) {
-        var ftpN = parseFloat(profile.ftp);
         var longPwrActs = pwrActs.filter(function(a){return a.distanceKm>=raceKm*0.3;});
         var basePwrActs = longPwrActs.length >= 1 ? longPwrActs : pwrActs;
         var avgPwr = basePwrActs.reduce(function(a,b){return a+b.avgPower;},0)/basePwrActs.length;
         trainingIF = +(avgPwr/ftpN).toFixed(2);
-        trainingIFLabel = (longPwrActs.length>=1?"장거리":"평균")+" 실측 IF "+trainingIF+" ("+fitnessWindowLabel+")";
+        trainingIFLabel = (longPwrActs.length>=1?"장거리":"평균")+" 실측 IF "+trainingIF+" ("+fitnessWindowLabel+") · 파워계";
       }
+
+      // ② 파워 없을 때: 훈련 볼륨과 컨디션 기반으로 기본 IF 범위 조정
+      // - 장거리(60km+) 훈련이 있으면 지구력 있다고 판단 → IF 상향
+      // - 주간 볼륨이 충분하면 → IF 상향, 부족하면 → IF 하향
+      // - condFactor 반영 (피로/회복 상태)
+      var baseIF_default = 0.68; // 검증된 기본값 (저수령 IF 0.68 실측)
+      if (!trainingIF && fitnessActs.length >= 1) {
+        var longCycleActs = fitnessActs.filter(function(a){return a.distanceKm >= 60;});
+        var totalCycleKm = fitnessActs.reduce(function(acc,a){return acc+a.distanceKm;},0);
+
+        var ifAdj = 0;
+        // 장거리 훈련 있으면 +0.03
+        if (longCycleActs.length >= 1) ifAdj += 0.03;
+        // 2개 이상이면 추가 +0.02
+        if (longCycleActs.length >= 2) ifAdj += 0.02;
+        // 주간 볼륨 충분하면 +0.02 (목표 거리의 50% 이상)
+        if (weeklyVolKm >= raceKm * 0.5) ifAdj += 0.02;
+        // 훈련이 부족하면 -0.03
+        if (totalCycleKm < raceKm * 0.5) ifAdj -= 0.03;
+
+        trainingIF = Math.min(Math.max(+(baseIF_default + ifAdj).toFixed(2), 0.50), 0.90);
+        trainingIFLabel = "훈련 볼륨 기반 추정 IF "+trainingIF
+          +" ("+fitnessWindowLabel+", 장거리 "+longCycleActs.length+"회, 주간 "+weeklyVolKm.toFixed(0)+"km)"
+          +" · 파워계 추가 시 정밀도 향상";
+      }
+
+      // ③ condFactor를 IF에 반영
+      // condFactor 0.97 = 컨디션 양호 → IF 소폭 상향
+      // condFactor 1.04 = 피로 → IF 소폭 하향
+      var ifCondAdj = 2 - condFactor; // 0.97→1.03, 1.04→0.96
+      if (trainingIF) {
+        var adjustedIF = Math.min(Math.max(+(trainingIF * ifCondAdj).toFixed(2), 0.40), 1.05);
+        if (Math.abs(adjustedIF - trainingIF) >= 0.01) {
+          trainingIF = adjustedIF;
+          trainingIFLabel += condFactor < 1.0 ? " · 컨디션 양호 보정(+)" : (condFactor > 1.01 ? " · 피로 보정(-)" : "");
+        }
+      }
+
       var zones;
       if (trainingIF && trainingIF > 0.4 && trainingIF < 1.1) {
-        var baseIF = Math.min(Math.max(trainingIF, 0.55), 0.95);
+        var baseIF = Math.min(Math.max(trainingIF, 0.50), 0.92);
         zones = [
-          {label:"회복 페이스 (IF "+(baseIF-0.10).toFixed(2)+")", pct:baseIF-0.10, desc:"가볍게 — 회복/입문"},
-          {label:"실측 기반 추천 (IF "+baseIF.toFixed(2)+")", pct:baseIF, desc:trainingIFLabel+" ★"},
-          {label:"목표 페이스 (IF "+(baseIF+0.07).toFixed(2)+")", pct:baseIF+0.07, desc:"훈련보다 약간 강하게"},
-          {label:"고강도 (IF "+(baseIF+0.14).toFixed(2)+")", pct:baseIF+0.14, desc:"매우 힘듦 — 단거리 한정"},
+          {label:"회복 페이스 (IF "+(baseIF-0.08).toFixed(2)+")", pct:baseIF-0.08, desc:"가볍게 — 회복/입문"},
+          {label:"훈련 기반 추천 (IF "+baseIF.toFixed(2)+")", pct:baseIF, desc:trainingIFLabel},
+          {label:"목표 페이스 (IF "+(baseIF+0.06).toFixed(2)+")", pct:baseIF+0.06, desc:"훈련보다 약간 강하게"},
+          {label:"고강도 (IF "+(baseIF+0.12).toFixed(2)+")", pct:baseIF+0.12, desc:"매우 힘듦 — 단거리 한정"},
         ];
       } else {
+        // 훈련 데이터 없으면 기본 고정 존
         zones = null;
       }
       cyclingRows = calcCyclingTime(profile.ftp, effectiveCourseData.distanceKm, effectiveEleGain, profile.weight, effectiveCourseData.elevProfile, zones);
