@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <rect width="192" height="192" fill="#0a0c0f"/>
+  <circle cx="96" cy="40" r="18" fill="#00e5a0"/>
+  <path d="M96 62 L75 110 L55 130" stroke="#00e5a0" stroke-width="8" fill="none" stroke-linecap="round"/>
+  <path d="M96 62 L115 95 L140 85" stroke="#00e5a0" stroke-width="8" fill="none" stroke-linecap="round"/>
+  <path d="M75 110 L60 155" stroke="#00e5a0" stroke-width="8" fill="none" stroke-linecap="round"/>
+  <path d="M96 62 L100 120 L125 155" stroke="#00e5a0" stroke-width="8" fill="none" stroke-linecap="round"/>
+  <text x="96" y="180" font-size="14" fill="#00e5a0" text-anchor="middle" font-family="monospace">TRAINING</text>
+</svg>
