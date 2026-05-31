@@ -2061,7 +2061,7 @@ export default function App() {
                     }}>{exportCopied?"✓ 복사됨":"복사"}</button>
                   </div>
                   <textarea readOnly value={exportText} onClick={function(e){e.target.select();}}
-                    style={{width:"100%",height:120,background:C.surface2,border:"1px solid "+C.border,color:C.muted,fontFamily:"monospace",fontSize:10,padding:"8px",resize:"none",outline:"none",lineHeight:1.4,boxSizing:"border-box"}} />
+                    style={{width:"100%",height:120,background:C.surface2,border:"1px solid "+C.border,color:C.muted,fontFamily:"monospace",fontSize:16,padding:"8px",resize:"none",outline:"none",lineHeight:1.4,boxSizing:"border-box"}} />
                   <div style={{fontFamily:"monospace",fontSize:10,color:C.muted,marginTop:4}}>
                     활동 {activities.length}개 · 프로필 포함 · {(exportText.length/1024).toFixed(1)}KB
                   </div>
@@ -2118,7 +2118,7 @@ export default function App() {
                         setImportPreview({data:data,fileName:"붙여넣기"});
                       } catch(err) {}
                     }}
-                    style={{width:"100%",height:80,background:C.surface2,border:"1px solid "+C.border,color:C.muted,fontFamily:"monospace",fontSize:10,padding:"8px",resize:"none",outline:"none",lineHeight:1.4,boxSizing:"border-box"}}
+                    style={{width:"100%",height:80,background:C.surface2,border:"1px solid "+C.border,color:C.muted,fontFamily:"monospace",fontSize:16,padding:"8px",resize:"none",outline:"none",lineHeight:1.4,boxSizing:"border-box"}}
                   />
                 </div>
               )}
