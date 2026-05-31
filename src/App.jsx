@@ -872,13 +872,13 @@ export default function App() {
   var totalEle = activities.reduce(function(a,b){return a+(b.elevationGain||0);},0).toLocaleString();
 
   if (!storageReady) return (
-    <div style={{background:C.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div style={{background:C.bg,minHeight:"100dvh",display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{color:C.accent,fontFamily:"monospace",fontSize:12,letterSpacing:3}}>LOADING...</div>
     </div>
   );
 
   return (
-    <div style={{background:C.bg,minHeight:"100vh",fontFamily:"sans-serif",color:C.text}}>
+    <div style={{background:C.bg,minHeight:"100dvh",fontFamily:"sans-serif",color:C.text}}>
       <div style={{position:"fixed",inset:0,pointerEvents:"none",zIndex:0,
         backgroundImage:"linear-gradient(rgba(0,229,160,0.02) 1px,transparent 1px),linear-gradient(90deg,rgba(0,229,160,0.02) 1px,transparent 1px)",
         backgroundSize:"32px 32px"}} />
@@ -891,7 +891,7 @@ export default function App() {
           {toast.msg}
         </div>
       )}
-      <div style={{maxWidth:840,margin:"0 auto",padding:"32px 20px 80px",position:"relative",zIndex:1}}>
+      <div style={{maxWidth:840,margin:"0 auto",padding:"env(safe-area-inset-top, 44px) 20px calc(env(safe-area-inset-bottom, 20px) + 60px)",position:"relative",zIndex:1}}>
 
         {/* 헤더 */}
         <div style={{marginBottom:24}}>
