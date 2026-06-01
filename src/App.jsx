@@ -99,6 +99,214 @@ function parseActivityGPX(text) {
   };
 }
 
+// ── FIT 바이너리 파서 ──────────────────────────────────────────────────────────
+function parseActivityFIT(buffer) {
+  var bytes = new Uint8Array(buffer);
+  var view = new DataView(buffer);
+
+  // FIT 헤더 검증
+  if (bytes.length < 14) return null;
+  var headerSize = bytes[0];
+  var protocol = bytes[1];
+  // FIT 시그니처 확인 (.FIT)
+  var sig = String.fromCharCode(bytes[8],bytes[9],bytes[10],bytes[11]);
+  if (sig !== '.FIT') return null;
+
+  // 메시지 정의/데이터 파싱
+  var localMsgDefs = {};
+  var pos = headerSize;
+  var dataEnd = headerSize + view.getUint32(4, true);
+  if (dataEnd > bytes.length) dataEnd = bytes.length - 2;
+
+  // 수집할 데이터
+  var lats=[], lons=[], alts=[], timestamps=[], hrs=[], powers=[], speeds=[];
+  var totalDist = 0;
+  var sessionAvgPower = null, sessionAvgHR = null, sessionAvgSpeed = null;
+  var sessionNP = null, sessionTSS = null;
+  var activityTimestamp = null;
+
+  // FIT 메시지 번호
+  var MSG_RECORD = 20;
+  var MSG_SESSION = 18;
+  var MSG_ACTIVITY = 34;
+
+  // FIT 타입
+  var BASE_TYPES = {
+    0x00: {size:1,signed:false}, 0x01: {size:1,signed:true},
+    0x02: {size:1,signed:false}, 0x83: {size:2,signed:false},
+    0x84: {size:2,signed:true},  0x85: {size:4,signed:false},
+    0x86: {size:4,signed:true},  0x07: {size:1,signed:false},
+    0x88: {size:4,signed:false,'float':true}, 0x89: {size:8,signed:false,'float':true},
+    0x0A: {size:1,signed:false}, 0x8B: {size:2,signed:false},
+    0x8C: {size:4,signed:false}, 0x0D: {size:1,signed:false},
+    0x0E: {size:4,signed:false}, 0x0F: {size:8,signed:false},
+    0xFF: {size:1,signed:false}, // invalid
+  };
+
+  function readVal(bt, pos) {
+    var info = BASE_TYPES[bt] || {size:1,signed:false};
+    var sz = info.size;
+    if (pos + sz > bytes.length) return {val:null, size:sz};
+    var val = null;
+    try {
+      if (bt === 0x88) val = view.getFloat32(pos, true);
+      else if (bt === 0x89) val = view.getFloat64(pos, true);
+      else if (sz === 1) val = info.signed ? view.getInt8(pos) : view.getUint8(pos);
+      else if (sz === 2) val = info.signed ? view.getInt16(pos,true) : view.getUint16(pos,true);
+      else if (sz === 4) val = info.signed ? view.getInt32(pos,true) : view.getUint32(pos,true);
+      else if (sz === 8) { val = view.getUint32(pos,true); } // lo 32비트만
+    } catch(e) { val = null; }
+    return {val:val, size:sz};
+  }
+
+  try {
+    while (pos < dataEnd) {
+      var recHdr = bytes[pos]; pos++;
+      var isDefn = (recHdr & 0x40) !== 0;
+      var isCompressed = (recHdr & 0x80) !== 0;
+
+      if (isCompressed) {
+        // 압축 타임스탬프 레코드 — 단순 건너뜀
+        var localNum = (recHdr >> 5) & 0x03;
+        var def = localMsgDefs[localNum];
+        if (def) {
+          for (var fi=0; fi<def.fields.length; fi++) pos += def.fields[fi].size;
+        } else { pos++; }
+        continue;
+      }
+
+      var localMsgNum = recHdr & 0x0F;
+
+      if (isDefn) {
+        pos++; // reserved
+        var arch = bytes[pos++]; // 0=little, 1=big
+        var globalMsgNum = arch === 0 ? view.getUint16(pos,true) : view.getUint16(pos,false);
+        pos += 2;
+        var numFields = bytes[pos++];
+        var fields = [];
+        for (var fi=0; fi<numFields; fi++) {
+          var fNum = bytes[pos++];
+          var fSz  = bytes[pos++];
+          var fBt  = bytes[pos++];
+          fields.push({num:fNum, size:fSz, baseType:fBt, arch:arch});
+        }
+        // 개발자 필드 (있으면 건너뜀)
+        if (recHdr & 0x20) {
+          var nDev = bytes[pos++];
+          for (var di=0; di<nDev; di++) pos += 3;
+        }
+        localMsgDefs[localMsgNum] = {globalMsgNum:globalMsgNum, fields:fields, arch:arch};
+
+      } else {
+        // 데이터 레코드
+        var def2 = localMsgDefs[localMsgNum];
+        if (!def2) { pos++; continue; }
+
+        var recData = {};
+        for (var fi=0; fi<def2.fields.length; fi++) {
+          var f = def2.fields[fi];
+          var r = readVal(f.baseType, pos);
+          recData[f.num] = r.val;
+          pos += f.size;
+        }
+
+        var gNum = def2.globalMsgNum;
+
+        if (gNum === MSG_RECORD) {
+          // record: lat=0, lon=1, alt=2, hr=3, power=7, speed=6, dist=5, ts=253
+          if (recData[0] != null && recData[0] !== 0x7FFFFFFF)
+            lats.push(recData[0] * (180/Math.pow(2,31)));
+          if (recData[1] != null && recData[1] !== 0x7FFFFFFF)
+            lons.push(recData[1] * (180/Math.pow(2,31)));
+          if (recData[2] != null) alts.push(recData[2]/5 - 500);
+          if (recData[3] != null && recData[3] > 0 && recData[3] < 250) hrs.push(recData[3]);
+          if (recData[7] != null && recData[7] > 0 && recData[7] < 2500) powers.push(recData[7]);
+          if (recData[6] != null && recData[6] > 0) speeds.push(recData[6]/1000);
+          if (recData[253] != null) timestamps.push(recData[253]);
+        }
+
+        if (gNum === MSG_SESSION) {
+          // session: avg_power=20, avg_hr=16, avg_speed=14, nec_power=34, tss=35, ts=253
+          if (recData[20] != null && recData[20] > 0 && recData[20] < 2000) sessionAvgPower = recData[20];
+          if (recData[16] != null && recData[16] > 0) sessionAvgHR = recData[16];
+          if (recData[14] != null && recData[14] > 0) sessionAvgSpeed = recData[14]/1000;
+          if (recData[34] != null && recData[34] > 0) sessionNP = recData[34]; // normalized power
+          if (recData[35] != null) sessionTSS = recData[35]/10;
+          if (recData[253] != null && !activityTimestamp) activityTimestamp = recData[253];
+        }
+
+        if (gNum === MSG_ACTIVITY) {
+          if (recData[253] != null) activityTimestamp = recData[253];
+        }
+      }
+    }
+  } catch(e) {
+    // 파싱 중 오류 시 그냥 현재까지 수집한 데이터 사용
+  }
+
+  if (lats.length < 2 && powers.length < 10 && hrs.length < 10) return null;
+
+  // 거리 계산
+  var totalDistM = 0;
+  for (var i=1; i<lats.length; i++) {
+    totalDistM += haversine(lats[i-1],lons[i-1],lats[i],lons[i]);
+  }
+
+  // 시간 계산
+  var durationSec = 0;
+  if (timestamps.length >= 2) {
+    durationSec = timestamps[timestamps.length-1] - timestamps[0];
+  }
+
+  // 고도 상승
+  var smoothedAlts = alts.length > 0 ? smoothElevation(alts) : [];
+  var eg = smoothedAlts.length > 0 ? calcElevGain(smoothedAlts) : {gain:0,loss:0};
+
+  // elevProfile
+  var step = Math.max(1, Math.floor(smoothedAlts.length/80));
+  var elevProfile = smoothedAlts.filter(function(_,i){return i%step===0;});
+
+  // 평균 속도/페이스
+  var avgSpeedMs = sessionAvgSpeed || (totalDistM > 0 && durationSec > 0 ? totalDistM/durationSec : 0);
+  var avgPaceMinKm = avgSpeedMs > 0 ? (1000/avgSpeedMs/60) : 0;
+
+  // 심박
+  var avgHR = sessionAvgHR;
+  if (!avgHR && hrs.length > 0) avgHR = Math.round(hrs.reduce(function(a,b){return a+b;},0)/hrs.length);
+
+  // 파워 (세션 값 우선, 없으면 레코드 평균)
+  var avgPower = sessionAvgPower;
+  if (!avgPower && powers.length > 0) avgPower = Math.round(powers.reduce(function(a,b){return a+b;},0)/powers.length);
+
+  // 활동 날짜 (FIT timestamp는 2000-01-01 기준 초)
+  var activityDate = "";
+  if (activityTimestamp) {
+    try {
+      var fitEpoch = 631065600; // 2000-01-01 UTC Unix epoch
+      var unixTs = (activityTimestamp + fitEpoch) * 1000;
+      activityDate = new Date(unixTs).toISOString().slice(0,10);
+    } catch(e) {}
+  }
+
+  return {
+    name: "활동",
+    gpxType: "cycling",
+    activityDate: activityDate,
+    distanceKm: +((totalDistM/1000).toFixed(2)),
+    elevationGain: eg.gain, elevationLoss: eg.loss,
+    durationMin: Math.round(durationSec/60),
+    avgPaceMinKm: +avgPaceMinKm.toFixed(2),
+    avgHR: avgHR || null,
+    maxHR: hrs.length ? Math.max.apply(null,hrs) : null,
+    avgPower: avgPower || null,
+    normalizedPower: sessionNP || null,
+    tss: sessionTSS || null,
+    points: lats.length,
+    elevProfile: elevProfile,
+    hasPower: powers.length > 50,
+  };
+}
+
 function parseCourseGPX(text) {
   var parser = new DOMParser();
   var doc = parser.parseFromString(text, "text/xml");
@@ -460,7 +668,7 @@ export default function App() {
   var _pr = useState({name:"",weight:"",age:"",gender:"male",ltPaceMinKm:"",ltHR:"",vo2maxRun:"",ftp:"",ftpPerKg:"",vo2maxCycle:"",notes:""});
   var profile = _pr[0], setProfile = _pr[1];
   var _ps = useState(false); var profileSaved = _ps[0], setProfileSaved = _ps[1];
-  var _sp = useState("trail_run"); var sport = _sp[0], setSport = _sp[1];
+  var _sp = useState("road_run"); var sport = _sp[0], setSport = _sp[1];
   var _lf = useState("all"); var logFilter = _lf[0], setLogFilter = _lf[1];
   var _ad = useState(false); var actDrag = _ad[0], setActDrag = _ad[1];
   var actRef = useRef();
@@ -543,19 +751,32 @@ export default function App() {
   }
 
   async function handleActivityFiles(files) {
-    var valid = Array.from(files).filter(function(f){return /\.(gpx|tcx)$/i.test(f.name);});
-    if (!valid.length) { showToast("GPX 또는 TCX 파일만 지원합니다","error"); return; }
+    var valid = Array.from(files).filter(function(f){return /\.(gpx|tcx|fit)$/i.test(f.name);});
+    if (!valid.length) { showToast("GPX, TCX 또는 FIT 파일만 지원합니다","error"); return; }
     var added = 0, newList = activities.slice(), detectedSports = [];
     for (var i = 0; i < valid.length; i++) {
-      var stats = parseActivityGPX(await valid[i].text());
-      if (!stats) continue;
+      var file = valid[i];
+      var isFit = /\.fit$/i.test(file.name);
+      var stats = null;
+
+      if (isFit) {
+        // FIT 바이너리 파싱
+        var buf = await file.arrayBuffer();
+        stats = parseActivityFIT(buf);
+        if (!stats) { showToast(file.name+" — FIT 파싱 실패","error"); continue; }
+        // FIT는 사이클로 기본 분류 (gpxType 기반)
+      } else {
+        stats = parseActivityGPX(await file.text());
+        if (!stats) continue;
+      }
+
       var avgSpeedKmh = stats.durationMin > 0 ? (stats.distanceKm/(stats.durationMin/60)) : 0;
       var gainPerKm = stats.distanceKm > 0 ? (stats.elevationGain/stats.distanceKm) : 0;
       var detected = autoClassifySport(avgSpeedKmh, gainPerKm, stats.name, stats.gpxType);
       detectedSports.push(SPORT_LABELS[detected]||detected);
       newList.unshift(Object.assign({
         id:"a_"+Date.now()+"_"+Math.random().toString(36).slice(2,5),
-        sport: detected, uploadedAt: new Date().toISOString(), fileName: valid[i].name,
+        sport: detected, uploadedAt: new Date().toISOString(), fileName: file.name,
       }, stats));
       added++;
     }
@@ -563,7 +784,7 @@ export default function App() {
       setActivities(newList); await saveActivities(newList);
       showToast(added+"개 저장 ✓  자동분류: "+detectedSports.join(", "));
       setView("log");
-    } else { showToast("파싱 실패. GPX 파일을 확인해주세요","error"); }
+    } else { showToast("파싱 실패. 파일을 확인해주세요","error"); }
   }
 
   async function handleCourseFile(files) {
@@ -639,18 +860,29 @@ export default function App() {
     var isCyclingTarget = (sport==="cycling"||sport==="mtb");
     var isRunningTarget = (sport==="trail_run"||sport==="road_run");
 
+    // 페이스/강도 계산용: 동종 종목만 (트레일 5'42"를 로드 기준에 쓰면 안 됨)
     var relevantActs = activities.filter(function(a){
-      return isCyclingTarget ? (a.sport==="cycling"||a.sport==="mtb") : (a.sport==="trail_run"||a.sport==="road_run");
+      if (isCyclingTarget) return (a.sport==="cycling"||a.sport==="mtb");
+      return a.sport === sport; // 로드런이면 로드런만, 트레일이면 트레일만
     });
 
-    // 크로스트레이닝 활동 (반대 종목)
-    // 유산소 기저(심폐)는 종목 간 전이됨 — 단, 종목 특이적 효율은 제한적
-    // 사이클 → 러닝: 유산소 기여 25% (충격 없어 회복 유리, 보행 효율 미전이)
-    // 러닝 → 사이클: 유산소 기여 20% (심폐 전이, 페달링 효율 미전이)
+    // 크로스트레이닝: 유산소 기저(심폐)에 기여하는 이종 종목
+    // 사이클 ↔ 러닝, 로드런 ↔ 트레일런 (페이스는 다르지만 심폐는 전이됨)
     var crossActs = activities.filter(function(a){
-      return isCyclingTarget ? (a.sport==="trail_run"||a.sport==="road_run") : (a.sport==="cycling"||a.sport==="mtb");
+      if (isCyclingTarget) return (a.sport==="trail_run"||a.sport==="road_run");
+      if (sport==="road_run") return (a.sport==="trail_run"||a.sport==="cycling"||a.sport==="mtb");
+      if (sport==="trail_run") return (a.sport==="road_run"||a.sport==="cycling"||a.sport==="mtb");
+      return false;
     });
-    var CROSS_WEIGHT = isCyclingTarget ? 0.20 : 0.25; // 크로스트레이닝 기여 가중치
+    // 크로스 가중치: 같은 러닝군은 85%(페이스 외 유산소 대부분 전이), 사이클은 25%
+    // crossActs 항목별로 가중치를 다르게 적용
+    function getCrossWeight(act) {
+      if (isCyclingTarget) return 0.20; // 사이클에서 러닝 기여
+      if (sport==="road_run"&&act.sport==="trail_run") return 0.85; // 트레일→로드 심폐 거의 동일
+      if (sport==="trail_run"&&act.sport==="road_run") return 0.85; // 로드→트레일 심폐 거의 동일
+      return 0.25; // 사이클↔러닝
+    }
+    var CROSS_WEIGHT = 0.25; // fallback (주간볼륨 계산 시 동적으로 대체)
 
     var recent = relevantActs.slice(0,20);
     var totalVolKm = relevantActs.reduce(function(a,b){return a+b.distanceKm;},0);
@@ -670,18 +902,17 @@ export default function App() {
     var cross42 = crossActs.filter(function(a){return now-new Date(a.activityDate||a.uploadedAt).getTime()<42*DAY;});
     var cross7  = crossActs.filter(function(a){return now-new Date(a.activityDate||a.uploadedAt).getTime()<7*DAY;});
 
-    // 크로스트레이닝 유산소 기여 환산
-    // 거리 기반 환산: 사이클은 러닝 대비 약 1/3 유산소 효과 (칼로리/km 비율 역산)
-    // 러닝은 사이클 대비 약 1.5배 강도 (체중 부하 차이)
-    var crossVolKmEquiv = cross42.reduce(function(a,b){
-      var distKm = b.distanceKm;
-      // 동종 환산 거리: 사이클→러닝은 1/3, 러닝→사이클은 3배
-      var equiv = isCyclingTarget ? distKm / 3 : distKm * 3;
-      return a + equiv * CROSS_WEIGHT;
+    // 크로스트레이닝 유산소 기여 환산 (항목별 가중치 적용)
+    // 트레일↔로드: 85% (심폐 거의 동일), 사이클↔러닝: 25%
+    var crossVolKmEquiv = cross42.reduce(function(a, b) {
+      var w = getCrossWeight(b);
+      var equiv = isCyclingTarget ? b.distanceKm/3 : b.distanceKm; // 사이클은 러닝 1/3 환산
+      return a + equiv * w;
     }, 0);
-    var crossWeeklyKmEquiv = cross7.reduce(function(a,b){
-      var equiv = isCyclingTarget ? b.distanceKm/3 : b.distanceKm*3;
-      return a + equiv * CROSS_WEIGHT;
+    var crossWeeklyKmEquiv = cross7.reduce(function(a, b) {
+      var w = getCrossWeight(b);
+      var equiv = isCyclingTarget ? b.distanceKm/3 : b.distanceKm;
+      return a + equiv * w;
     }, 0);
 
     // 피트니스 창: 6~10주 데이터 우선 (CTL 42일), 없으면 70일
@@ -803,7 +1034,15 @@ export default function App() {
         dataPace = recentAvgPace * Math.max(1.0,distPenalty);
         dataLabel = "훈련 평균 기반 ("+fitnessWindowLabel+")"; dataConfidence = "신뢰도 보통";
       }
-      var elePerKm = courseData ? courseData.gainPerKm : avgElePerKm;
+      var elePerKm = 0;
+      if (courseData) {
+        // 코스 GPX 있으면 코스 고도 우선
+        elePerKm = courseData.gainPerKm;
+      } else if (sport === "trail_run") {
+        // 트레일런이고 코스 없으면 훈련 평균 고도 사용
+        elePerKm = avgElePerKm;
+      }
+      // 로드런은 코스 GPX 없으면 고도 보정 0 (평지 기준)
 
       // 트레일런 고도 보정: Minetti 구간별 계산 (로드 단순 공식 대체)
       // 로드런: 100m/km당 6% (기존)
@@ -1078,6 +1317,8 @@ export default function App() {
                                       [act.distanceKm+"km",C.text],[formatPace(act.avgPaceMinKm),C.accent],
                                       [(act.elevationGain||0)+"m↑",C.gold],[act.avgHR?act.avgHR+"bpm":"—",C.red],
                                       ...(act.avgPower?[[act.avgPower+"W",C.blue]]:[]),
+                                      ...(act.normalizedPower?[["NP "+act.normalizedPower+"W","#7ab8ff"]]:[]),
+                                      ...(act.tss?[["TSS "+Math.round(act.tss),"#a88fff"]]:[]),
                                     ].map(function(v,i){return <div key={i} style={{fontFamily:"monospace",fontSize:12,fontWeight:700,color:v[1]}}>{v[0]}</div>;})}
                                   </div>
                                 </div>
@@ -1091,7 +1332,7 @@ export default function App() {
                 })()}
               </div>
             )}
-            <input ref={actRef} type="file" multiple accept=".gpx,.tcx" style={{display:"none"}} onChange={function(e){handleActivityFiles(e.target.files);}} />
+            <input ref={actRef} type="file" multiple accept=".gpx,.tcx,.fit" style={{display:"none"}} onChange={function(e){handleActivityFiles(e.target.files);}} />
           </div>
         )}
 
@@ -1352,7 +1593,7 @@ export default function App() {
                       <div style={{fontSize:11,color:C.muted}}>대회 공홈 / Strava / Komoot GPX 가능</div>
                     </div>
                   )}
-                  <input ref={courseRef} type="file" accept=".gpx,.tcx" style={{display:"none"}} onChange={function(e){handleCourseFile(e.target.files);}} />
+                  <input ref={courseRef} type="file" accept=".gpx,.tcx,.fit" style={{display:"none"}} onChange={function(e){handleCourseFile(e.target.files);}} />
                 </div>
                 {/* 추가 정보 */}
                 <div style={Object.assign(cardStyle(),{marginBottom:16})}>
@@ -1476,12 +1717,14 @@ export default function App() {
                     {analysis.trainingSummary.crossCount > 0 && (
                       <div style={{marginTop:8,fontFamily:"monospace",fontSize:10,color:"rgba(77,159,255,0.8)",background:"rgba(77,159,255,0.06)",border:"1px solid rgba(77,159,255,0.2)",padding:"5px 10px",lineHeight:1.6}}>
                         🔄 크로스트레이닝 반영: {analysis.trainingSummary.crossCount}개 활동
-                        {analysis.trainingSummary.crossKmEquiv && " · 유산소 환산 "+analysis.trainingSummary.crossKmEquiv+"km (가중치 "+analysis.trainingSummary.crossWeight+"%)"}
+                        {analysis.trainingSummary.crossKmEquiv && " · 유산소 환산 "+analysis.trainingSummary.crossKmEquiv+"km"}
                         <br />
                         <span style={{color:C.muted}}>
                           {analysis.trainingSummary.isCycling
                             ? "러닝 훈련 심폐 기여 반영 — 페달링 효율은 미적용"
-                            : "사이클 훈련 심폐 기여 반영 — 보행 효율은 미적용"}
+                            : analysis.sport==="road_run"
+                              ? "트레일런 심폐 기여 85% + 사이클 25% 반영 — 페이스 기준은 로드런만"
+                              : "로드런 심폐 기여 85% + 사이클 25% 반영 — 페이스 기준은 트레일런만"}
                         </span>
                       </div>
                     )}
