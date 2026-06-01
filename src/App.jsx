@@ -455,22 +455,18 @@ var SPORT_LABELS = {
 };
 var PRESET_RACES = [
   {label:"직접 입력", value:"custom"},
-  {label:"── 트레일런 ──", value:"", disabled:true},
+  {label:"── 로드런 ──", value:"", disabled:true},
+  {label:"5K",        value:"road_5",      km:5},
+  {label:"10K",       value:"road_10",     km:10},
+  {label:"하프마라톤", value:"road_21.1",  km:21.1},
+  {label:"풀마라톤",   value:"road_42.195",km:42.195},
+  {label:"── 트레일런 (코스 GPX 권장) ──", value:"", disabled:true},
   {label:"트레일 10K",  value:"trail_10",   km:10},
   {label:"트레일 21K",  value:"trail_21.1", km:21.1},
-  {label:"트레일 30K",  value:"trail_30",   km:30},
   {label:"트레일 50K",  value:"trail_50",   km:50},
   {label:"트레일 100K", value:"trail_100",  km:100},
-  {label:"트레일 100Mile", value:"trail_161", km:161},
-  {label:"── 로드런 ──", value:"", disabled:true},
-  {label:"로드 5K",      value:"road_5",     km:5},
-  {label:"로드 10K",     value:"road_10",    km:10},
-  {label:"하프마라톤",   value:"road_21.1",  km:21.1},
-  {label:"풀마라톤",     value:"road_42.195",km:42.195},
-  {label:"── 사이클 ──", value:"", disabled:true},
-  {label:"100km",        value:"cycle_100",  km:100},
-  {label:"그란폰도 160km", value:"cycle_160", km:160},
-  {label:"200km 브레베", value:"cycle_200",  km:200},
+  {label:"── 사이클 (코스 GPX 권장) ──", value:"", disabled:true},
+  {label:"직접 입력", value:"custom_cycle", km:0},
 ];
 
 // ── 고도 차트 ─────────────────────────────────────────────────────────────────
@@ -1038,33 +1034,45 @@ export default function App() {
     var runningRows = null;
     if (sport==="trail_run"||sport==="road_run") {
       var lt = profile.ltPaceMinKm ? parseFloat(profile.ltPaceMinKm) : 0;
+
+      // 거리별 LT 배율 (스포츠과학 기반 - 항상 이걸 기준으로)
+      var ltMults = (function(){
+        if (raceKm <= 5)      return {hard:1.00, mid:1.03, easy:1.07};
+        if (raceKm <= 10)     return {hard:1.03, mid:1.06, easy:1.10};
+        if (raceKm <= 21.1)   return {hard:1.08, mid:1.12, easy:1.17};
+        if (raceKm <= 42.195) return {hard:1.14, mid:1.18, easy:1.24};
+        if (raceKm <= 60)     return {hard:1.22, mid:1.28, easy:1.35};
+        return                       {hard:1.30, mid:1.40, easy:1.55};
+      })();
+
+      // 훈련 데이터로 LT 배율 보정 (±5% 범위)
+      // 훈련 페이스 ÷ LT = 실제 훈련 강도 → 대회 페이스와 비교
       var dataPace = 0, dataLabel = "", dataConfidence = "";
       if (recentLongPace > 0) {
-        var distFactor = Math.pow(raceKm/Math.max(maxActDist,raceKm*0.5), 0.07);
-        dataPace = recentLongPace * distFactor;
-        dataLabel = "장거리 훈련 기반 ("+fitnessWindowLabel+")"; dataConfidence = "신뢰도 높음";
+        dataPace = recentLongPace;
+        dataLabel = "장거리 훈련 기반 ("+fitnessWindowLabel+")";
+        dataConfidence = "신뢰도 높음";
       } else if (recentAvgPace > 0) {
-        var distPenalty = 1 + Math.log(raceKm/Math.max(maxActDist,5))*0.08;
-        dataPace = recentAvgPace * Math.max(1.0,distPenalty);
-        dataLabel = "훈련 평균 기반 ("+fitnessWindowLabel+")"; dataConfidence = "신뢰도 보통";
+        // 훈련 평균 페이스에서 목표 거리 페널티 적용
+        // 리겔 공식: T2 = T1 × (D2/D1)^1.06
+        var trainAvgDist = maxActDist > 0 ? maxActDist : 10;
+        var riegelFactor = Math.pow(raceKm / trainAvgDist, 0.06); // 페이스 증가 비율
+        dataPace = recentAvgPace * riegelFactor;
+        dataLabel = "훈련 평균 기반 (거리 보정 ×"+riegelFactor.toFixed(2)+")";
+        dataConfidence = "신뢰도 보통";
       }
+
       var elePerKm = 0;
       if (courseData) {
-        // 코스 GPX 있으면 코스 고도 우선
         elePerKm = courseData.gainPerKm;
       } else if (sport === "trail_run") {
-        // 트레일런이고 코스 없으면 훈련 평균 고도 사용
         elePerKm = avgElePerKm;
       }
-      // 로드런은 코스 GPX 없으면 고도 보정 0 (평지 기준)
 
-      // 트레일런 고도 보정: Minetti 구간별 계산 (로드 단순 공식 대체)
-      // 로드런: 100m/km당 6% (기존)
-      // 트레일: 구간별 경사 × 에너지 비용 비율로 정밀 계산
+      // 트레일런 고도 보정
       var eleBoostPct = 0;
       if (elePerKm > 0) {
         if (sport === "trail_run" && courseData && courseData.elevProfile && courseData.elevProfile.length >= 2) {
-          // Minetti 트레일 보정: 코스 elevProfile로 구간별 경사 → 가중 평균 배율
           var ep = courseData.elevProfile;
           var totalFactor = 0, totalDist2 = 0;
           var segLen = courseData.distanceKm / (ep.length - 1);
@@ -1072,7 +1080,6 @@ export default function App() {
             var g = (ep[ei] - ep[ei-1]) / (segLen * 1000);
             var s = Math.max(-0.30, Math.min(0.30, g));
             var cost = (155.4*Math.pow(s,5) - 30.4*Math.pow(s,4) - 43.3*Math.pow(s,3) + 46.3*Math.pow(s,2) + 19.5*s + 3.6) / 3.6;
-            // 트레일 내리막 보정
             if (s < -0.10) cost = 1.05;
             else if (s < -0.05) cost = 1.0;
             else if (s < 0) cost = 1.0 + (cost - 1.0) * 0.30;
@@ -1080,46 +1087,41 @@ export default function App() {
             totalDist2 += segLen;
           }
           var avgFactor = totalDist2 > 0 ? totalFactor / totalDist2 : 1.0;
-          eleBoostPct = avgFactor - 1.0; // 예: 1.35 → 35% 페이스 페널티
+          eleBoostPct = avgFactor - 1.0;
         } else {
-          // 로드런 / 코스 없을 때: 기존 단순 공식
           eleBoostPct = (elePerKm / 100) * 0.06;
         }
       }
+
       var rows = [];
-      if (dataPace > 0 && lt > 0) {
+
+      if (lt > 0 && dataPace > 0) {
+        // LT + 훈련 데이터 통합
+        // LT 기반 예측과 훈련 기반 예측을 블렌딩
+        var ltPred   = lt * ltMults.mid * condFactor * (1+eleBoostPct);
+        var ltHard   = lt * ltMults.hard * condFactor * (1+eleBoostPct);
+        var dataPred = dataPace * condFactor * (1+eleBoostPct);
+        // 훈련 데이터 신뢰도에 따라 블렌딩 비율 조정
+        var blend = recentLongPace > 0 ? 0.5 : 0.3; // 장거리 있으면 50:50, 없으면 70:30 (LT 우선)
+        var blended = ltPred*(1-blend) + dataPred*blend;
         rows = [
-          {src:"훈련 데이터 기반", pace:dataPace*condFactor*(1+eleBoostPct), desc:dataLabel+" · "+dataConfidence, isRecommended:false},
-          {src:"통합 예측 (추천)", pace:(dataPace*0.6+lt*1.12*0.4)*condFactor*(1+eleBoostPct), desc:"실측+LT 통합 · "+condLabel, isRecommended:true},
-          {src:"LT 이론 기반", pace:lt*1.15*(1+eleBoostPct), desc:"LT 페이스 × 1.15 (이론)", isRecommended:false},
+          {src:"도전 페이스 (LT×"+ltMults.hard.toFixed(2)+")", pace:ltHard, desc:"LT 기반 최적 페이스", isRecommended:false},
+          {src:"통합 예측 (추천)", pace:blended, desc:"LT+"+dataLabel+" 통합 · "+condLabel, isRecommended:true},
+          {src:"훈련 기반", pace:dataPred, desc:dataLabel+" · "+dataConfidence, isRecommended:false},
+        ];
+      } else if (lt > 0) {
+        // LT만 있을 때
+        rows = [
+          {src:"도전 페이스 (LT×"+ltMults.hard.toFixed(2)+")", pace:lt*ltMults.hard*condFactor*(1+eleBoostPct), desc:"충분히 훈련된 경우", isRecommended:false},
+          {src:"현실적 예측 (LT×"+ltMults.mid.toFixed(2)+")", pace:lt*ltMults.mid*condFactor*(1+eleBoostPct), desc:"일반적 레이스 기준", isRecommended:true},
+          {src:"여유 페이스 (LT×"+ltMults.easy.toFixed(2)+")", pace:lt*ltMults.easy*condFactor*(1+eleBoostPct), desc:"처음 도전 / 완주 목표", isRecommended:false},
         ];
       } else if (dataPace > 0) {
+        // 훈련 데이터만 있을 때
         rows = [
           {src:"낙관적", pace:dataPace*condFactor*(1+eleBoostPct)*0.95, desc:dataLabel+" · 컨디션 최상", isRecommended:false},
           {src:"현실적 (추천)", pace:dataPace*condFactor*(1+eleBoostPct), desc:dataLabel+" · "+condLabel, isRecommended:true},
           {src:"보수적", pace:dataPace*condFactor*(1+eleBoostPct)*1.08, desc:dataLabel+" · 여유 있게", isRecommended:false},
-        ];
-      } else if (lt > 0) {
-        // 거리별 적정 LT 배율 (스포츠과학 기반)
-        // 10K: LT×1.04~1.08, 하프: LT×1.10~1.14, 풀마: LT×1.18~1.22
-        var ltMult, ltMultHard, ltMultEasy;
-        if (raceKm <= 5) {
-          ltMultHard = 1.00; ltMult = 1.03; ltMultEasy = 1.07;
-        } else if (raceKm <= 10) {
-          ltMultHard = 1.03; ltMult = 1.06; ltMultEasy = 1.10;
-        } else if (raceKm <= 21.1) {
-          ltMultHard = 1.08; ltMult = 1.12; ltMultEasy = 1.17;
-        } else if (raceKm <= 42.195) {
-          ltMultHard = 1.14; ltMult = 1.18; ltMultEasy = 1.24;
-        } else if (raceKm <= 60) {
-          ltMultHard = 1.22; ltMult = 1.28; ltMultEasy = 1.35;
-        } else {
-          ltMultHard = 1.30; ltMult = 1.40; ltMultEasy = 1.55;
-        }
-        rows = [
-          {src:"목표 페이스 (LT×"+ltMultHard.toFixed(2)+")", pace:lt*ltMultHard*(1+eleBoostPct), desc:"충분히 훈련된 경우 도전 페이스", isRecommended:false},
-          {src:"현실적 예측 (LT×"+ltMult.toFixed(2)+")", pace:lt*ltMult*(1+eleBoostPct), desc:"일반적 레이스 페이스 기준", isRecommended:true},
-          {src:"여유 페이스 (LT×"+ltMultEasy.toFixed(2)+")", pace:lt*ltMultEasy*(1+eleBoostPct), desc:"처음 도전 / 완주 목표", isRecommended:false},
         ];
       }
       if (rows.length) {
