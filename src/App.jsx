@@ -456,12 +456,21 @@ var SPORT_LABELS = {
 var PRESET_RACES = [
   {label:"직접 입력", value:"custom"},
   {label:"── 트레일런 ──", value:"", disabled:true},
-  {label:"10K 트레일", value:"10"}, {label:"21K 하프", value:"21.1"},
-  {label:"30K", value:"30"}, {label:"50K", value:"50"}, {label:"100K", value:"100"}, {label:"100Mile", value:"161"},
+  {label:"트레일 10K",  value:"trail_10",   km:10},
+  {label:"트레일 21K",  value:"trail_21.1", km:21.1},
+  {label:"트레일 30K",  value:"trail_30",   km:30},
+  {label:"트레일 50K",  value:"trail_50",   km:50},
+  {label:"트레일 100K", value:"trail_100",  km:100},
+  {label:"트레일 100Mile", value:"trail_161", km:161},
   {label:"── 로드런 ──", value:"", disabled:true},
-  {label:"5K", value:"5"}, {label:"10K", value:"10"}, {label:"하프마라톤", value:"21.1"}, {label:"풀마라톤", value:"42.195"},
+  {label:"로드 5K",      value:"road_5",     km:5},
+  {label:"로드 10K",     value:"road_10",    km:10},
+  {label:"하프마라톤",   value:"road_21.1",  km:21.1},
+  {label:"풀마라톤",     value:"road_42.195",km:42.195},
   {label:"── 사이클 ──", value:"", disabled:true},
-  {label:"100km", value:"100"}, {label:"그란폰도 160km", value:"160"}, {label:"200km 브레베", value:"200"},
+  {label:"100km",        value:"cycle_100",  km:100},
+  {label:"그란폰도 160km", value:"cycle_160", km:160},
+  {label:"200km 브레베", value:"cycle_200",  km:200},
 ];
 
 // ── 고도 차트 ─────────────────────────────────────────────────────────────────
@@ -844,10 +853,15 @@ export default function App() {
     } catch(e) { showToast("불러오기 실패: "+e.message,"error"); }
   }
 
-  function getRaceKm() { return racePreset!=="custom" ? parseFloat(racePreset)||0 : parseFloat(raceKmInput)||0; }
+  function getRaceKm() {
+    if (racePreset === "custom") return parseFloat(raceKmInput)||0;
+    var p = PRESET_RACES.find(function(r){return r.value===racePreset;});
+    return p ? p.km : 0;
+  }
   function getRaceLabel() {
-    if (racePreset!=="custom") { var p = PRESET_RACES.find(function(r){return r.value===racePreset&&!r.disabled;}); return p?p.label:racePreset+"km"; }
-    return raceKmInput ? raceKmInput+"km" : "?km";
+    if (racePreset === "custom") return raceKmInput ? raceKmInput+"km" : "?km";
+    var p = PRESET_RACES.find(function(r){return r.value===racePreset&&!r.disabled;});
+    return p ? p.label : racePreset;
   }
 
   function runLocalPrediction() {
@@ -1086,10 +1100,26 @@ export default function App() {
           {src:"보수적", pace:dataPace*condFactor*(1+eleBoostPct)*1.08, desc:dataLabel+" · 여유 있게", isRecommended:false},
         ];
       } else if (lt > 0) {
+        // 거리별 적정 LT 배율 (스포츠과학 기반)
+        // 10K: LT×1.04~1.08, 하프: LT×1.10~1.14, 풀마: LT×1.18~1.22
+        var ltMult, ltMultHard, ltMultEasy;
+        if (raceKm <= 5) {
+          ltMultHard = 1.00; ltMult = 1.03; ltMultEasy = 1.07;
+        } else if (raceKm <= 10) {
+          ltMultHard = 1.03; ltMult = 1.06; ltMultEasy = 1.10;
+        } else if (raceKm <= 21.1) {
+          ltMultHard = 1.08; ltMult = 1.12; ltMultEasy = 1.17;
+        } else if (raceKm <= 42.195) {
+          ltMultHard = 1.14; ltMult = 1.18; ltMultEasy = 1.24;
+        } else if (raceKm <= 60) {
+          ltMultHard = 1.22; ltMult = 1.28; ltMultEasy = 1.35;
+        } else {
+          ltMultHard = 1.30; ltMult = 1.40; ltMultEasy = 1.55;
+        }
         rows = [
-          {src:"목표 페이스 (LT×1.10)", pace:lt*1.10*(1+eleBoostPct), desc:"충분히 훈련된 경우", isRecommended:false},
-          {src:"장거리 페이스 (LT×1.18)", pace:lt*1.18*(1+eleBoostPct), desc:"일반 장거리 기준", isRecommended:true},
-          {src:"여유 페이스 (LT×1.25)", pace:lt*1.25*(1+eleBoostPct), desc:"처음 도전 / 완주 목표", isRecommended:false},
+          {src:"목표 페이스 (LT×"+ltMultHard.toFixed(2)+")", pace:lt*ltMultHard*(1+eleBoostPct), desc:"충분히 훈련된 경우 도전 페이스", isRecommended:false},
+          {src:"현실적 예측 (LT×"+ltMult.toFixed(2)+")", pace:lt*ltMult*(1+eleBoostPct), desc:"일반적 레이스 페이스 기준", isRecommended:true},
+          {src:"여유 페이스 (LT×"+ltMultEasy.toFixed(2)+")", pace:lt*ltMultEasy*(1+eleBoostPct), desc:"처음 도전 / 완주 목표", isRecommended:false},
         ];
       }
       if (rows.length) {
@@ -1522,7 +1552,7 @@ export default function App() {
                     <div>
                       <div style={labelStyle()}>직접 입력 (km)</div>
                       <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                        <input type="number" value={racePreset==="custom"?raceKmInput:racePreset}
+                        <input type="number" value={racePreset==="custom"?raceKmInput:(getRaceKm()||"")}
                           onChange={function(e){setRacePreset("custom");setRaceKmInput(e.target.value);}}
                           placeholder="예: 63.5" min="1" max="1000" step="0.1" style={Object.assign(inputStyle(),{flex:1})} />
                         <span style={{fontFamily:"monospace",fontSize:12,color:C.muted,flexShrink:0}}>km</span>
