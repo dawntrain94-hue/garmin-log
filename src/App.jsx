@@ -989,13 +989,31 @@ export default function App() {
     var recentLongPace = longActs.length ? longActs.reduce(function(a,b){return a+b.avgPaceMinKm;},0)/longActs.length : 0;
 
     // 컨디션 계수: 동종 + 크로스 포함 전체 부하 기반
+    // 컨디션 계수 (TSB 근사): 동종 훈련 + 강도 가중 크로스트레이닝 피로
     var condFactor = 1.0;
-    if (fitnessActs.length >= 2 && weeklyVolKm > 0) {
-      var ftBaseKm = (fitnessActs.reduce(function(a,b){return a+b.distanceKm;},0) + crossVolKmEquiv)
-        / Math.ceil((fitnessActs.length + cross42.length) / 1.5);
-      var tsb = ftBaseKm > 0 ? (ftBaseKm - wk1Km) / ftBaseKm : 0;
-      if (tsb > 0.3) condFactor = 0.97;
-      else if (tsb > 0.1) condFactor = 0.99;
+    if (fitnessActs.length >= 2) {
+      var wk1KmPure = atl7.reduce(function(a,b){return a+b.distanceKm;},0);
+
+      // 크로스트레이닝 피로 기여: 강도에 따라 가중
+      // 심박 데이터 있으면 강도 추정, 없으면 보수적 10% 반영
+      var lthrRef = profile.ltHR ? parseFloat(profile.ltHR) : 0;
+      var crossFatigue = cross7.reduce(function(acc, a) {
+        var distKm = isCyclingTarget ? a.distanceKm / 3 : a.distanceKm; // 환산 거리
+        if (lthrRef > 0 && a.avgHR) {
+          // 고강도(역치 이상): 40% 반영, 저강도: 10% 반영
+          var intensity = a.avgHR / lthrRef;
+          var crossW = intensity >= 0.85 ? 0.40 : 0.10;
+          return acc + distKm * crossW;
+        }
+        return acc + distKm * 0.10; // 강도 모르면 저강도 가정
+      }, 0);
+
+      var ftBaseKm = fitnessActs.reduce(function(a,b){return a+b.distanceKm;},0)
+        / Math.max(1, fitnessActs.length / (fitnessActs.length > 4 ? 1.5 : 1));
+      var wk1Total = wk1KmPure + crossFatigue; // 동종 + 강도 가중 크로스
+      var tsb = ftBaseKm > 0 ? (ftBaseKm - wk1Total) / ftBaseKm : 0;
+      if (tsb > 0.3)       condFactor = 0.97;
+      else if (tsb > 0.1)  condFactor = 0.99;
       else if (tsb < -0.3) condFactor = 1.04;
       else if (tsb < -0.1) condFactor = 1.02;
     }
