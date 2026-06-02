@@ -899,6 +899,7 @@ export default function App() {
   }
 
   function runLocalPrediction() {
+    try {
     var raceKm = getRaceKm();
     if (!raceKm) { showToast("목표 거리를 입력해주세요","error"); return; }
     var hasProfile = !!(profile.ltPaceMinKm||profile.ftp||profile.ltHR);
@@ -1427,6 +1428,10 @@ export default function App() {
       trainingSummary:trainingSummary, sport:sport, trainingReadiness:trainingReadiness,
     });
     setView("predict");
+    } catch(err) {
+      console.error("예측 오류:", err);
+      showToast("예측 계산 중 오류: "+err.message, "error");
+    }
   }
   async function runPrediction() { runLocalPrediction(); }
 
