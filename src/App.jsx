@@ -942,7 +942,7 @@ export default function App() {
     var DAY = 86400000;
     var ctl42 = relevantActs.filter(function(a){return now-new Date(a.activityDate||a.uploadedAt).getTime()<42*DAY;});
     var ctl70 = relevantActs.filter(function(a){return now-new Date(a.activityDate||a.uploadedAt).getTime()<70*DAY;});
-    var atl7  = relevantActs.filter(function(a){return now-new Date(a.activityDate||a.uploadedAt).getTime()<7*DAY;});
+    var atl7  = relevantActs.filter(function(a){return now-new Date(a.activityDate||a.uploadedAt).getTime()<7.5*DAY;});
     var atl14 = relevantActs.filter(function(a){return now-new Date(a.activityDate||a.uploadedAt).getTime()<14*DAY;});
     var cond28= relevantActs.filter(function(a){return now-new Date(a.activityDate||a.uploadedAt).getTime()<28*DAY;});
 
@@ -1015,8 +1015,8 @@ export default function App() {
       //   100km 그란폰도: 30km+ 보통, 50km+ 충분
       //   200km 코스:    60km+ 보통, 100km+ 충분
       // 러닝: 목표거리 40% 이상이면 보통, 70% 이상이면 충분
-      var volMin  = isCyclingTarget ? raceKm * 0.30 : raceKm * 0.40;
-      var volGood = isCyclingTarget ? raceKm * 0.50 : raceKm * 0.70;
+      var volMin  = isCyclingTarget ? Math.floor(raceKm * 0.30) : Math.floor(raceKm * 0.40);
+      var volGood = isCyclingTarget ? Math.floor(raceKm * 0.50) : Math.floor(raceKm * 0.70);
 
       var thisWeekKm = atl7.reduce(function(a,b){return a+b.distanceKm;},0);
       var wk7label = isCyclingTarget
