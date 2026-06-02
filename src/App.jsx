@@ -1020,6 +1020,10 @@ export default function App() {
     var crossWeeklyKmEquiv = 0;
 
     var wk1Km = atl7.reduce(function(a,b){return a+b.distanceKm;},0);
+    // DEBUG: atl7 내용 확인
+    if (process && process.env && process.env.NODE_ENV === 'development') {
+      console.log('atl7:', atl7.map(function(a){return {name:a.name||a.fileName, dist:a.distanceKm, sport:a.sport, date:a.activityDate||a.uploadedAt};}));
+    }
     var wk2to4Km = cond28.filter(function(a){return now-new Date(a.activityDate||a.uploadedAt).getTime()>=7*DAY;})
       .reduce(function(a,b){return a+b.distanceKm;},0);
     var weeklyVolKm = wk1Km * 0.5 + (wk2to4Km/3) * 0.5;
@@ -1095,14 +1099,14 @@ export default function App() {
 
       if (thisWeekKm >= volGood) {
         score += 25;
-        goods.push("주간 "+(isCyclingTarget?"라이딩":"러닝")+" 충분 — "+wk7label);
+        goods.push("최근 7일 "+(isCyclingTarget?"라이딩":"러닝")+" 충분 — "+wk7label);
       } else if (thisWeekKm >= volMin) {
         score += 15;
-        details.push("주간 "+(isCyclingTarget?"라이딩":"러닝")+" 보통 — "+wk7label);
+        details.push("최근 7일 "+(isCyclingTarget?"라이딩":"러닝")+" 보통 — "+wk7label);
       } else if (thisWeekKm > 0) {
         score += 5;
         var rec = Math.round(volMin)+"km/주 이상 권장";
-        warnings.push("주간 "+(isCyclingTarget?"라이딩":"러닝")+" 부족 — "+wk7label+", "+rec);
+        warnings.push("최근 7일 "+(isCyclingTarget?"라이딩":"러닝")+" 부족 — "+wk7label+", "+rec);
       } else { warnings.push("최근 7일 훈련 없음"); }
 
       // ② 롱런/롱라이드 (사이클은 60%, 러닝은 70% 기준)
@@ -1464,18 +1468,27 @@ export default function App() {
           <div style={{fontFamily:"monospace",fontSize:10,color:C.accent,letterSpacing:4,marginBottom:5}}>◆ PERSONAL TRAINING LOG</div>
           <div style={{fontSize:28,fontWeight:900,letterSpacing:1,marginBottom:10}}>내 훈련 기록</div>
           <div style={{display:"flex",gap:18,flexWrap:"wrap"}}>
-            {[
-              ["활동",activities.length+"개"],["총 거리",totalKm+" km"],["누적 고도",totalEle+" m↑"],
-              ...(profile.ltPaceMinKm?[["LT 페이스",formatPace(parseFloat(profile.ltPaceMinKm))]]:[]),
-              ...(profile.ftp?[["FTP",profile.ftp+"W"]]:[]),
-            ].map(function(item){
-              return (
-                <span key={item[0]} style={{fontFamily:"monospace",fontSize:11}}>
-                  <span style={{color:C.muted}}>{item[0]}: </span>
-                  <span style={{color:C.accent}}>{item[1]}</span>
-                </span>
-              );
-            })}
+            {(function(){
+              var runActs  = activities.filter(function(a){return a.sport==="road_run"||a.sport==="trail_run";});
+              var cycleActs= activities.filter(function(a){return a.sport==="cycling"||a.sport==="mtb";});
+              var runKm    = runActs.reduce(function(a,b){return a+b.distanceKm;},0).toFixed(1);
+              var cycleKm  = cycleActs.reduce(function(a,b){return a+b.distanceKm;},0).toFixed(1);
+              var items = [
+                ["러닝", runActs.length+"개 / "+runKm+"km"],
+                ["사이클", cycleActs.length+"개 / "+cycleKm+"km"],
+                ["누적 고도", totalEle+" m↑"],
+                ...(profile.ltPaceMinKm?[["LT 페이스",formatPace(parseFloat(profile.ltPaceMinKm))]]:[]),
+                ...(profile.ftp?[["FTP",profile.ftp+"W"]]:[]),
+              ];
+              return items.map(function(item){
+                return (
+                  <span key={item[0]} style={{fontFamily:"monospace",fontSize:11}}>
+                    <span style={{color:C.muted}}>{item[0]}: </span>
+                    <span style={{color:C.accent}}>{item[1]}</span>
+                  </span>
+                );
+              });
+            })()}
           </div>
         </div>
 
@@ -2122,7 +2135,7 @@ export default function App() {
                       {[
                         ["활동(창내)", analysis.trainingSummary.count+"개"],
                         ["총 거리", analysis.trainingSummary.totalKm+"km"],
-                        ["이번 주", analysis.trainingSummary.wk7km+"km"],
+                        ["최근 7일", analysis.trainingSummary.wk7km+"km"],
                         ["4주 평균", analysis.trainingSummary.wk4avg+"km/주"],
                         ["최장 거리", analysis.trainingSummary.maxDist+"km"],
                         ...(analysis.trainingSummary.isCycling ? [
