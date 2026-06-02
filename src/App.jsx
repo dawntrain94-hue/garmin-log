@@ -124,13 +124,16 @@ function vdotToPaceMinKm(vdot, distKm) {
 }
 
 // VDOT 기반 훈련 구간 페이스 (Daniels E/M/T/I/R)
+// 각 구간은 해당 VDOT에서의 특정 거리 레이스 페이스로 정의
 function vdotTrainingPaces(vdot) {
-  // E(Easy): VDOT의 59~74% 강도, T(Threshold): ~88%, I(Interval): ~98%, R(Rep): 105%
-  // 1마일 기준 페이스 역산
-  var easyPace   = vdotToPaceMinKm(vdot * 0.66, 1.609);
-  var maraPace   = vdotToPaceMinKm(vdot * 0.82, 1.609);
-  var tempoPace  = vdotToPaceMinKm(vdot * 0.88, 1.609);
-  var intervalPace = vdotToPaceMinKm(vdot * 0.975, 1.609);
+  // E(Easy): ~60분 이상 지속 가능 페이스 ≈ VDOT 기준 마라톤 페이스보다 15~20% 느림
+  // T(Threshold): 약 60분 최대 지속 페이스 ≈ 하프마라톤 페이스보다 약간 느림
+  // I(Interval): 5K 레이스 페이스 근방
+  // M(Marathon): 마라톤 레이스 페이스
+  var tempoPace    = vdotToPaceMinKm(vdot, 10);      // T ≈ 10K 페이스
+  var maraPace     = vdotToPaceMinKm(vdot, 42.195);  // M = 풀마 페이스
+  var intervalPace = vdotToPaceMinKm(vdot, 5);       // I ≈ 5K 페이스
+  var easyPace     = maraPace * 1.18;                // E = 마라톤보다 18% 느림
   return {easy:easyPace, marathon:maraPace, tempo:tempoPace, interval:intervalPace};
 }
 
@@ -1138,26 +1141,34 @@ export default function App() {
       // 훈련 데이터: 중간 (간접 지표)
       var rows = [];
       if (sport === "road_run" && vdotPace > 0) {
+        // VDOT은 레이스 실측 기반이라 condFactor 미적용 (이미 현실 반영)
+        // LT와 훈련 데이터에만 컨디션 보정
+        var vdotPred = vdotPace; // condFactor 없음
         var ltPred   = lt > 0 ? lt * ltMults.mid * condFactor : 0;
         var ltHard   = lt > 0 ? lt * ltMults.hard * condFactor : 0;
-        var dataPred = dataPace > 0 ? dataPace * condFactor : 0;
-        var vdotPred = vdotPace * condFactor;
 
-        // 교차검증: 세 예측값이 얼마나 일치하는지 확인
+        // dataPace 신뢰도: 훈련 거리가 목표 거리와 비슷할수록 높음
+        // 10K 예측인데 훈련이 5km짜리만 있으면 신뢰도 낮춤
+        var distSimilarity = maxActDist > 0 ? Math.min(1.0, maxActDist / raceKm) : 0;
+        var dataPred = dataPace > 0 ? dataPace * condFactor : 0;
+
+        // 가중치: 거리 유사도로 dataPace 가중치 조정
+        var wVdot = 0.45;
+        var wLt   = ltPred > 0 ? 0.35 : 0;
+        var wData = dataPred > 0 ? 0.20 * distSimilarity : 0; // 거리 가깝을수록 가중치 증가
+        var wSum  = wVdot + wLt + wData;
+        // wData가 0이면 VDOT+LT만으로 정규화
+        var blended = (vdotPred*wVdot + (ltPred||vdotPred)*wLt + (dataPred||vdotPred)*wData) / wSum;
+
+        // 교차검증 편차 계산
         var preds = [vdotPred, ltPred, dataPred].filter(function(p){return p>0;});
         var predAvg = preds.reduce(function(a,b){return a+b;},0)/preds.length;
         var predStd = Math.sqrt(preds.reduce(function(a,p){return a+Math.pow(p-predAvg,2);},0)/preds.length);
-        var cvPct = predStd/predAvg*100;
+        var cvPct = predAvg > 0 ? predStd/predAvg*100 : 0;
 
-        // 가중치: VDOT 40% + LT 35% + 훈련 25% (모두 있을 때)
-        // 없는 항목은 나머지에 재분배
-        var wVdot = 0.40, wLt = ltPred>0?0.35:0, wData = dataPred>0?0.25:0;
-        var wSum = wVdot + wLt + wData;
-        var blended = (vdotPred*wVdot + (ltPred||vdotPred)*wLt + (dataPred||vdotPred)*wData) / wSum;
-
-        var cvLabel = cvPct < 2 ? "✓ 3개 지표 일치 — 신뢰도 높음"
-          : cvPct < 5 ? "△ 지표 간 소폭 차이 — 신뢰도 보통"
-          : "⚠ 지표 간 차이 큼 — 실제 레이스 후 재보정 권장";
+        var cvLabel = cvPct < 2 ? "✓ 지표 일치 — 신뢰도 높음"
+          : cvPct < 5 ? "△ 지표 소폭 차이 — 신뢰도 보통"
+          : "⚠ 지표 차이 있음 — 최근 레이스 기록 입력 권장";
 
         rows = [
           {src:"VDOT 예측 (Jack Daniels)", pace:vdotPred*(1+eleBoostPct), desc:"VDOT "+vdotScore.toFixed(1)+" 기반 — 레이스 실측 최적화", isRecommended:false},
