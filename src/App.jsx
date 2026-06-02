@@ -1017,14 +1017,34 @@ export default function App() {
       // ① 주간 볼륨
       maxScore += 25;
       var volRatio = weeklyVolKm > 0 && volTarget > 0 ? weeklyVolKm/volTarget : 0;
-      if (volRatio >= 1.2)      { score += 25; goods.push("주간 볼륨 충분 — "+weeklyVolKm.toFixed(0)+"km/주"); }
-      else if (volRatio >= 0.7) { score += 15; details.push("주간 볼륨 보통 — "+weeklyVolKm.toFixed(0)+"km/주"); }
+      if (volRatio >= 1.2) {
+        score += 25;
+        if (isCyclingTarget) {
+          var wk7km2 = atl7.reduce(function(a,b){return a+b.distanceKm;},0).toFixed(0);
+          goods.push("주간 라이딩 충분 — "+atl7.length+"회 / "+wk7km2+"km");
+        } else {
+          goods.push("주간 러닝 볼륨 충분 — "+weeklyVolKm.toFixed(0)+"km");
+        }
+      } else if (volRatio >= 0.7) {
+        score += 15;
+        if (isCyclingTarget) {
+          var wk7km3 = atl7.reduce(function(a,b){return a+b.distanceKm;},0).toFixed(0);
+          details.push("주간 라이딩 보통 — "+atl7.length+"회 / "+wk7km3+"km");
+        } else {
+          details.push("주간 러닝 볼륨 보통 — "+weeklyVolKm.toFixed(0)+"km");
+        }
+      }
       else if (volRatio > 0) {
         score += 5;
         var rec = isCyclingTarget
           ? Math.round(volTarget)+"km/주 이상 권장"
           : Math.round(raceKm*0.5)+"km/주 이상 권장";
-        warnings.push("주간 볼륨 부족 — "+weeklyVolKm.toFixed(0)+"km/주, "+rec);
+        if (isCyclingTarget) {
+          var wk7km = atl7.reduce(function(a,b){return a+b.distanceKm;},0).toFixed(0);
+          warnings.push("주간 라이딩 "+atl7.length+"회 / "+wk7km+"km — "+rec);
+        } else {
+          warnings.push("주간 러닝 "+weeklyVolKm.toFixed(0)+"km — "+rec);
+        }
       } else { warnings.push("최근 7일 훈련 없음"); }
 
       // ② 롱런/롱라이드 (사이클은 60%, 러닝은 70% 기준)
