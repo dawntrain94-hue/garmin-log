@@ -972,8 +972,16 @@ export default function App() {
       .reduce(function(a,b){return a+b.distanceKm;},0);
     var weeklyVolKm = wk1Km * 0.5 + (wk2to4Km/3) * 0.5;
 
-    // 피트니스 기반 페이스: 6~10주 장거리 훈련 우선
-    var validPaces = fitnessActs.filter(function(a){return a.avgPaceMinKm>1&&a.avgPaceMinKm<20;}).map(function(a){return a.avgPaceMinKm;});
+    // 피트니스 기반 페이스: 이상치 제거 후 계산 (IQR 방식)
+    var rawPaces = fitnessActs.filter(function(a){return a.avgPaceMinKm>1&&a.avgPaceMinKm<20;}).map(function(a){return a.avgPaceMinKm;});
+    var validPaces = rawPaces;
+    if (rawPaces.length >= 4) {
+      var sortedP = rawPaces.slice().sort(function(a,b){return a-b;});
+      var q1 = sortedP[Math.floor(sortedP.length*0.25)];
+      var q3 = sortedP[Math.floor(sortedP.length*0.75)];
+      var iqr = q3 - q1;
+      validPaces = rawPaces.filter(function(p){return p >= q1-iqr*1.5 && p <= q3+iqr*1.5;});
+    }
     var recentAvgPace = validPaces.length ? validPaces.reduce(function(a,b){return a+b;},0)/validPaces.length : 0;
 
     // 장거리 훈련 페이스 (목표의 40% 이상, 6~10주 이내)
@@ -995,6 +1003,62 @@ export default function App() {
     var fitnessWindowLabel = ctl42.length >= 3 ? "6주(42일)" : (ctl70.length >= 2 ? "10주(70일)" : "전체 기간");
     var condLabel = condFactor < 1.0 ? "컨디션 양호" : (condFactor > 1.02 ? "피로 축적" : "보통");
     var hasCrossTraining = cross42.length > 0;
+
+    // ── 훈련 충분도 평가 ────────────────────────────────────────────────────────
+    var trainingReadiness = (function(){
+      if (relevantActs.length === 0) return null;
+      var score = 0, maxScore = 0;
+      var goods = [], warnings = [], details = [];
+
+      // ① 주간 볼륨
+      maxScore += 25;
+      var volRatio = weeklyVolKm > 0 && raceKm > 0 ? weeklyVolKm/raceKm : 0;
+      if (volRatio >= 0.8)      { score += 25; goods.push("주간 볼륨 충분 — "+weeklyVolKm.toFixed(0)+"km/주"); }
+      else if (volRatio >= 0.5) { score += 15; details.push("주간 볼륨 보통 — "+weeklyVolKm.toFixed(0)+"km/주 (목표의 "+Math.round(volRatio*100)+"%)"); }
+      else if (volRatio > 0)    { score += 5;  warnings.push("주간 볼륨 부족 — "+weeklyVolKm.toFixed(0)+"km/주, "+Math.round(raceKm*0.5)+"km 이상 권장"); }
+      else                       { warnings.push("최근 7일 훈련 없음"); }
+
+      // ② 롱런
+      maxScore += 30;
+      var longRunActs = fitnessActs.filter(function(a){return a.distanceKm>=raceKm*0.7;});
+      var midRunActs  = fitnessActs.filter(function(a){return a.distanceKm>=raceKm*0.5;});
+      if (longRunActs.length >= 2)      { score += 30; goods.push("롱런 충분 — "+Math.round(raceKm*0.7)+"km 이상 "+longRunActs.length+"회"); }
+      else if (longRunActs.length >= 1) { score += 20; goods.push("롱런 1회 — 목표의 70% 이상 달성"); }
+      else if (midRunActs.length >= 1)  { score += 10; warnings.push("롱런 부족 — "+Math.round(raceKm*0.7)+"km 이상 훈련 1회 이상 권장"); }
+      else                               { warnings.push("장거리 훈련 없음 — "+Math.round(raceKm*0.5)+"km 이상 훈련 필요"); }
+
+      // ③ 훈련 빈도
+      maxScore += 20;
+      var daysSpanned = Math.max(1, Math.min(42, fitnessActs.length > 1 ? (function(){
+        var dates = fitnessActs.map(function(a){return new Date(a.activityDate||a.uploadedAt).getTime();});
+        return Math.round((Math.max.apply(null,dates)-Math.min.apply(null,dates))/86400000)+1;
+      })() : 7));
+      var weeklyFreq = fitnessActs.length / (daysSpanned/7);
+      if (weeklyFreq >= 4)      { score += 20; goods.push("훈련 빈도 양호 — 주 "+weeklyFreq.toFixed(1)+"회"); }
+      else if (weeklyFreq >= 3) { score += 15; details.push("훈련 빈도 보통 — 주 "+weeklyFreq.toFixed(1)+"회"); }
+      else if (weeklyFreq > 0)  { score += 5;  warnings.push("훈련 빈도 부족 — 주 "+weeklyFreq.toFixed(1)+"회, 3회 이상 권장"); }
+
+      // ④ 훈련 페이스 vs 목표 페이스
+      maxScore += 25;
+      var targetPace = 0;
+      if (profile.vdot && parseFloat(profile.vdot)>0 && raceKm>0)
+        targetPace = vdotToPaceMinKm(parseFloat(profile.vdot), raceKm);
+      else if (profile.ltPaceMinKm && parseFloat(profile.ltPaceMinKm)>0)
+        targetPace = parseFloat(profile.ltPaceMinKm) * (raceKm<=10?1.06:raceKm<=21.1?1.12:1.18);
+
+      if (targetPace > 0 && recentAvgPace > 0) {
+        var paceGap = (recentAvgPace - targetPace) / targetPace * 100;
+        if (paceGap < 10)      { score += 25; goods.push("훈련 페이스 적절 — 목표와 "+paceGap.toFixed(0)+"% 차이"); }
+        else if (paceGap < 20) { score += 15; details.push("훈련 페이스 목표보다 "+paceGap.toFixed(0)+"% 느림 (롱런 포함 정상)"); }
+        else if (paceGap < 35) { score += 8;  warnings.push("훈련 평균 페이스("+formatPace(recentAvgPace)+") 목표("+formatPace(targetPace)+")보다 "+paceGap.toFixed(0)+"% 느림"); }
+        else                    {              warnings.push("훈련 페이스와 목표 차이 큼 — 인터벌/템포런 추가 권장"); }
+      }
+
+      var pct = maxScore > 0 ? Math.round(score/maxScore*100) : 0;
+      var level = pct >= 75 ? "충분" : pct >= 50 ? "보통" : pct >= 25 ? "부족" : "매우 부족";
+      var color = pct >= 75 ? "#00e5a0" : pct >= 50 ? "#ffb830" : "#ff6b35";
+      return {score:pct, level:level, color:color, goods:goods, details:details, warnings:warnings, raceKm:raceKm};
+    })();
 
     // 사이클: 훈련 IF 기반 파워존 조정
     var cyclingRows = null;
@@ -1253,7 +1317,7 @@ export default function App() {
       effectiveEleGain:courseData&&manualEleGain&&parseFloat(manualEleGain)>0?parseFloat(manualEleGain):(courseData?courseData.elevationGain:null),
       hasProfile:hasProfile, noActivity:noActivity,
       cyclingRows:cyclingRows, runningRows:runningRows,
-      trainingSummary:trainingSummary, sport:sport,
+      trainingSummary:trainingSummary, sport:sport, trainingReadiness:trainingReadiness,
     });
     setView("predict");
   }
@@ -1898,7 +1962,41 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                {/* 훈련 데이터 요약 */}
+                {/* 훈련 충분도 평가 */}
+                {analysis.trainingReadiness && (
+                  <div style={Object.assign(cardStyle(),{marginBottom:10})}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                      <div style={{fontFamily:"monospace",fontSize:10,color:analysis.trainingReadiness.color,letterSpacing:2}}>
+                        📊 대회 준비도
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <div style={{fontFamily:"monospace",fontSize:18,fontWeight:900,color:analysis.trainingReadiness.color}}>
+                          {analysis.trainingReadiness.score}점
+                        </div>
+                        <div style={{fontFamily:"monospace",fontSize:12,color:analysis.trainingReadiness.color,fontWeight:700}}>
+                          {analysis.trainingReadiness.level}
+                        </div>
+                      </div>
+                    </div>
+                    {/* 점수 바 */}
+                    <div style={{background:C.surface2,height:6,marginBottom:12,position:"relative"}}>
+                      <div style={{background:analysis.trainingReadiness.color,height:"100%",width:analysis.trainingReadiness.score+"%",transition:"width .4s"}} />
+                    </div>
+                    {/* 항목별 */}
+                    <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                      {analysis.trainingReadiness.goods.map(function(g,i){
+                        return <div key={"g"+i} style={{fontFamily:"monospace",fontSize:10,color:"#00e5a0"}}>✓ {g}</div>;
+                      })}
+                      {analysis.trainingReadiness.details.map(function(d,i){
+                        return <div key={"d"+i} style={{fontFamily:"monospace",fontSize:10,color:C.muted}}>• {d}</div>;
+                      })}
+                      {analysis.trainingReadiness.warnings.map(function(w,i){
+                        return <div key={"w"+i} style={{fontFamily:"monospace",fontSize:10,color:"#ff6b35"}}>⚠ {w}</div>;
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 {analysis.trainingSummary&&(
                   <div style={Object.assign(cardStyle(),{marginBottom:10,borderLeft:"3px solid "+C.accent})}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
