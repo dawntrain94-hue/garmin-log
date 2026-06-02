@@ -1015,7 +1015,10 @@ export default function App() {
       var volTarget = isCyclingTarget ? raceKm * 1.0 : raceKm * 0.5;
 
       // 주간 볼륨: 이번 주 실제 거리 기준 (블렌딩 값 아님)
-      var thisWeekKm = parseFloat(analysis.trainingSummary ? analysis.trainingSummary.wk7km : weeklyVolKm);
+      // 이번 주 실제 거리: 사이클은 실제 라이딩 거리, 러닝은 러닝만
+      var thisWeekKm = isCyclingTarget
+        ? atl7.reduce(function(a,b){return a+b.distanceKm;},0)
+        : atl7.reduce(function(a,b){return a+b.distanceKm;},0);
       var volRatio = thisWeekKm > 0 && volTarget > 0 ? thisWeekKm/volTarget : 0;
       if (volRatio >= 1.2) {
         score += 25;
