@@ -1010,44 +1010,29 @@ export default function App() {
       var score = 0, maxScore = 0;
       var goods = [], warnings = [], details = [];
 
-      // 종목별 주간 볼륨 기준
-      // 러닝: 목표 거리의 50%/주, 사이클: 목표 거리의 100%/주 (사이클은 회복이 빨라 볼륨 많음)
-      var volTarget = isCyclingTarget ? raceKm * 1.0 : raceKm * 0.5;
+      // 종목별 주간 볼륨 기준 (현실적 아마추어 기준)
+      // 사이클: 목표거리 30% 이상이면 보통, 50% 이상이면 충분
+      //   100km 그란폰도: 30km+ 보통, 50km+ 충분
+      //   200km 코스:    60km+ 보통, 100km+ 충분
+      // 러닝: 목표거리 40% 이상이면 보통, 70% 이상이면 충분
+      var volMin  = isCyclingTarget ? raceKm * 0.30 : raceKm * 0.40;
+      var volGood = isCyclingTarget ? raceKm * 0.50 : raceKm * 0.70;
 
-      // 주간 볼륨: 이번 주 실제 거리 기준 (블렌딩 값 아님)
-      // 이번 주 실제 거리: 사이클은 실제 라이딩 거리, 러닝은 러닝만
-      var thisWeekKm = isCyclingTarget
-        ? atl7.reduce(function(a,b){return a+b.distanceKm;},0)
-        : atl7.reduce(function(a,b){return a+b.distanceKm;},0);
-      var volRatio = thisWeekKm > 0 && volTarget > 0 ? thisWeekKm/volTarget : 0;
-      if (volRatio >= 1.2) {
+      var thisWeekKm = atl7.reduce(function(a,b){return a+b.distanceKm;},0);
+      var wk7label = isCyclingTarget
+        ? atl7.length+"회 / "+thisWeekKm.toFixed(0)+"km"
+        : thisWeekKm.toFixed(0)+"km";
+
+      if (thisWeekKm >= volGood) {
         score += 25;
-        if (isCyclingTarget) {
-          var wk7km2 = atl7.reduce(function(a,b){return a+b.distanceKm;},0).toFixed(0);
-          goods.push("주간 라이딩 충분 — "+atl7.length+"회 / "+wk7km2+"km");
-        } else {
-          goods.push("주간 러닝 볼륨 충분 — "+thisWeekKm.toFixed(0)+"km");
-        }
-      } else if (volRatio >= 0.7) {
+        goods.push("주간 "+(isCyclingTarget?"라이딩":"러닝")+" 충분 — "+wk7label);
+      } else if (thisWeekKm >= volMin) {
         score += 15;
-        if (isCyclingTarget) {
-          var wk7km3 = atl7.reduce(function(a,b){return a+b.distanceKm;},0).toFixed(0);
-          details.push("주간 라이딩 보통 — "+atl7.length+"회 / "+wk7km3+"km");
-        } else {
-          details.push("주간 러닝 볼륨 보통 — "+thisWeekKm.toFixed(0)+"km");
-        }
-      }
-      else if (volRatio > 0) {
+        details.push("주간 "+(isCyclingTarget?"라이딩":"러닝")+" 보통 — "+wk7label);
+      } else if (thisWeekKm > 0) {
         score += 5;
-        var rec = isCyclingTarget
-          ? Math.round(volTarget)+"km/주 이상 권장"
-          : Math.round(raceKm*0.5)+"km/주 이상 권장";
-        if (isCyclingTarget) {
-          var wk7km = atl7.reduce(function(a,b){return a+b.distanceKm;},0).toFixed(0);
-          warnings.push("주간 라이딩 "+atl7.length+"회 / "+wk7km+"km — "+rec);
-        } else {
-          warnings.push("주간 러닝 "+thisWeekKm.toFixed(0)+"km — "+rec);
-        }
+        var rec = Math.round(volMin)+"km/주 이상 권장";
+        warnings.push("주간 "+(isCyclingTarget?"라이딩":"러닝")+" 부족 — "+wk7label+", "+rec);
       } else { warnings.push("최근 7일 훈련 없음"); }
 
       // ② 롱런/롱라이드 (사이클은 60%, 러닝은 70% 기준)
