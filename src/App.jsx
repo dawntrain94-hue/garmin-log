@@ -1066,9 +1066,9 @@ export default function App() {
         return Math.round((Math.max.apply(null,dates)-Math.min.apply(null,dates))/86400000)+1;
       })() : 7));
       var weeklyFreq = fitnessActs.length / (daysSpanned/7);
-      if (weeklyFreq >= 4)       { score += 20; goods.push("훈련 빈도 양호 — 주 "+weeklyFreq.toFixed(1)+"회"); }
-      else if (weeklyFreq >= 3)  { score += 15; details.push("훈련 빈도 보통 — 주 "+weeklyFreq.toFixed(1)+"회"); }
-      else if (weeklyFreq > 0)   { score += 5;  warnings.push("훈련 빈도 부족 — 주 "+weeklyFreq.toFixed(1)+"회, 3회 이상 권장"); }
+      if (weeklyFreq >= 4)       { score += 20; goods.push("훈련 빈도 양호 — 이번 주 "+Math.round(weeklyFreq)+"회 이상 훈련"); }
+      else if (weeklyFreq >= 3)  { score += 15; details.push("훈련 빈도 보통 — 주 평균 "+Math.round(weeklyFreq)+"회 훈련"); }
+      else if (weeklyFreq > 0)   { score += 5;  warnings.push("훈련 빈도 부족 — 최근 주 평균 "+Math.round(weeklyFreq)+"회, 꾸준한 훈련을 위해 주 3회 이상 권장"); }
 
       // ④ 훈련 강도 평가
       maxScore += 25;
