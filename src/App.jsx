@@ -99,7 +99,42 @@ function parseActivityGPX(text) {
   };
 }
 
-// ── FIT 바이너리 파서 ──────────────────────────────────────────────────────────
+// ── VDOT (Jack Daniels) 공식 ────────────────────────────────────────────────
+// Daniels-Gilbert 공식: VDOT = (-4.6+0.182258×v+0.000104×v²) / (0.8+0.1894393×e^(-0.012778×t)+0.2989558×e^(-0.1932605×t))
+// v = m/min, t = 분
+function calcVDOT(distKm, timeMin) {
+  var v = (distKm * 1000) / timeMin; // m/min
+  var t = timeMin;
+  var numerator = -4.6 + 0.182258*v + 0.000104*v*v;
+  var denominator = 0.8 + 0.1894393*Math.exp(-0.012778*t) + 0.2989558*Math.exp(-0.1932605*t);
+  return +(numerator/denominator).toFixed(1);
+}
+
+// VDOT으로 특정 거리 예측 시간(분) 계산 — 수치해석으로 역산
+function vdotToPaceMinKm(vdot, distKm) {
+  // t(분)에 대해 이진 탐색으로 calcVDOT(distKm, t) ≈ vdot 만족하는 t 찾기
+  var lo = distKm * 1.5, hi = distKm * 30; // 분 범위
+  for (var i = 0; i < 60; i++) {
+    var mid = (lo+hi)/2;
+    if (calcVDOT(distKm, mid) > vdot) lo = mid;
+    else hi = mid;
+  }
+  var totalMin = (lo+hi)/2;
+  return totalMin / distKm; // min/km
+}
+
+// VDOT 기반 훈련 구간 페이스 (Daniels E/M/T/I/R)
+function vdotTrainingPaces(vdot) {
+  // E(Easy): VDOT의 59~74% 강도, T(Threshold): ~88%, I(Interval): ~98%, R(Rep): 105%
+  // 1마일 기준 페이스 역산
+  var easyPace   = vdotToPaceMinKm(vdot * 0.66, 1.609);
+  var maraPace   = vdotToPaceMinKm(vdot * 0.82, 1.609);
+  var tempoPace  = vdotToPaceMinKm(vdot * 0.88, 1.609);
+  var intervalPace = vdotToPaceMinKm(vdot * 0.975, 1.609);
+  return {easy:easyPace, marathon:maraPace, tempo:tempoPace, interval:intervalPace};
+}
+
+
 function parseActivityFIT(buffer) {
   var bytes = new Uint8Array(buffer);
   var view = new DataView(buffer);
@@ -670,7 +705,7 @@ export default function App() {
   var _an = useState(null); var analysis = _an[0], setAnalysis = _an[1];
   var _at = useState(null); var aiText = _at[0], setAiText = _at[1];
   var _to = useState(null); var toast = _to[0], setToast = _to[1];
-  var _pr = useState({name:"",weight:"",age:"",gender:"male",ltPaceMinKm:"",ltHR:"",vo2maxRun:"",ftp:"",ftpPerKg:"",vo2maxCycle:"",notes:""});
+  var _pr = useState({name:"",weight:"",age:"",gender:"male",ltPaceMinKm:"",ltHR:"",vo2maxRun:"",ftp:"",ftpPerKg:"",vo2maxCycle:"",vdot:"",recentRaceDist:"",recentRaceTime:"",notes:""});
   var profile = _pr[0], setProfile = _pr[1];
   var _ps = useState(false); var profileSaved = _ps[0], setProfileSaved = _ps[1];
   var _sp = useState("road_run"); var sport = _sp[0], setSport = _sp[1];
@@ -1034,8 +1069,9 @@ export default function App() {
     var runningRows = null;
     if (sport==="trail_run"||sport==="road_run") {
       var lt = profile.ltPaceMinKm ? parseFloat(profile.ltPaceMinKm) : 0;
+      var vdotScore = (sport==="road_run" && profile.vdot) ? parseFloat(profile.vdot) : 0;
 
-      // 거리별 LT 배율 (스포츠과학 기반 - 항상 이걸 기준으로)
+      // 거리별 LT 배율
       var ltMults = (function(){
         if (raceKm <= 5)      return {hard:1.00, mid:1.03, easy:1.07};
         if (raceKm <= 10)     return {hard:1.03, mid:1.06, easy:1.10};
@@ -1045,18 +1081,21 @@ export default function App() {
         return                       {hard:1.30, mid:1.40, easy:1.55};
       })();
 
-      // 훈련 데이터로 LT 배율 보정 (±5% 범위)
-      // 훈련 페이스 ÷ LT = 실제 훈련 강도 → 대회 페이스와 비교
+      // VDOT 기반 예측 페이스 (로드런 전용)
+      var vdotPace = 0;
+      if (vdotScore > 0 && sport === "road_run") {
+        vdotPace = vdotToPaceMinKm(vdotScore, raceKm);
+      }
+
+      // 훈련 데이터 기반 페이스
       var dataPace = 0, dataLabel = "", dataConfidence = "";
       if (recentLongPace > 0) {
         dataPace = recentLongPace;
         dataLabel = "장거리 훈련 기반 ("+fitnessWindowLabel+")";
         dataConfidence = "신뢰도 높음";
       } else if (recentAvgPace > 0) {
-        // 훈련 평균 페이스에서 목표 거리 페널티 적용
-        // 리겔 공식: T2 = T1 × (D2/D1)^1.06
         var trainAvgDist = maxActDist > 0 ? maxActDist : 10;
-        var riegelFactor = Math.pow(raceKm / trainAvgDist, 0.06); // 페이스 증가 비율
+        var riegelFactor = Math.pow(raceKm / trainAvgDist, 0.06);
         dataPace = recentAvgPace * riegelFactor;
         dataLabel = "훈련 평균 기반 (거리 보정 ×"+riegelFactor.toFixed(2)+")";
         dataConfidence = "신뢰도 보통";
@@ -1069,7 +1108,6 @@ export default function App() {
         elePerKm = avgElePerKm;
       }
 
-      // 트레일런 고도 보정
       var eleBoostPct = 0;
       if (elePerKm > 0) {
         if (sport === "trail_run" && courseData && courseData.elevProfile && courseData.elevProfile.length >= 2) {
@@ -1093,31 +1131,63 @@ export default function App() {
         }
       }
 
+      // ── 교차검증 블렌딩 (로드런 전용) ──────────────────────────────
+      // 입력된 데이터에 따라 신뢰도 가중치 동적 계산
+      // VDOT: 가장 신뢰도 높음 (실제 레이스 기반)
+      // LT: 높음 (가민 측정값)
+      // 훈련 데이터: 중간 (간접 지표)
       var rows = [];
+      if (sport === "road_run" && vdotPace > 0) {
+        var ltPred   = lt > 0 ? lt * ltMults.mid * condFactor : 0;
+        var ltHard   = lt > 0 ? lt * ltMults.hard * condFactor : 0;
+        var dataPred = dataPace > 0 ? dataPace * condFactor : 0;
+        var vdotPred = vdotPace * condFactor;
 
-      if (lt > 0 && dataPace > 0) {
-        // LT + 훈련 데이터 통합
-        // LT 기반 예측과 훈련 기반 예측을 블렌딩
-        var ltPred   = lt * ltMults.mid * condFactor * (1+eleBoostPct);
-        var ltHard   = lt * ltMults.hard * condFactor * (1+eleBoostPct);
-        var dataPred = dataPace * condFactor * (1+eleBoostPct);
-        // 훈련 데이터 신뢰도에 따라 블렌딩 비율 조정
-        var blend = recentLongPace > 0 ? 0.5 : 0.3; // 장거리 있으면 50:50, 없으면 70:30 (LT 우선)
-        var blended = ltPred*(1-blend) + dataPred*blend;
+        // 교차검증: 세 예측값이 얼마나 일치하는지 확인
+        var preds = [vdotPred, ltPred, dataPred].filter(function(p){return p>0;});
+        var predAvg = preds.reduce(function(a,b){return a+b;},0)/preds.length;
+        var predStd = Math.sqrt(preds.reduce(function(a,p){return a+Math.pow(p-predAvg,2);},0)/preds.length);
+        var cvPct = predStd/predAvg*100;
+
+        // 가중치: VDOT 40% + LT 35% + 훈련 25% (모두 있을 때)
+        // 없는 항목은 나머지에 재분배
+        var wVdot = 0.40, wLt = ltPred>0?0.35:0, wData = dataPred>0?0.25:0;
+        var wSum = wVdot + wLt + wData;
+        var blended = (vdotPred*wVdot + (ltPred||vdotPred)*wLt + (dataPred||vdotPred)*wData) / wSum;
+
+        var cvLabel = cvPct < 2 ? "✓ 3개 지표 일치 — 신뢰도 높음"
+          : cvPct < 5 ? "△ 지표 간 소폭 차이 — 신뢰도 보통"
+          : "⚠ 지표 간 차이 큼 — 실제 레이스 후 재보정 권장";
+
         rows = [
-          {src:"도전 페이스 (LT×"+ltMults.hard.toFixed(2)+")", pace:ltHard, desc:"LT 기반 최적 페이스", isRecommended:false},
-          {src:"통합 예측 (추천)", pace:blended, desc:"LT+"+dataLabel+" 통합 · "+condLabel, isRecommended:true},
-          {src:"훈련 기반", pace:dataPred, desc:dataLabel+" · "+dataConfidence, isRecommended:false},
+          {src:"VDOT 예측 (Jack Daniels)", pace:vdotPred*(1+eleBoostPct), desc:"VDOT "+vdotScore.toFixed(1)+" 기반 — 레이스 실측 최적화", isRecommended:false},
+          {src:"교차검증 통합 (추천)", pace:blended*(1+eleBoostPct), desc:"VDOT 40%+LT 35%+훈련 25% · "+cvLabel, isRecommended:true},
+          ...(ltHard>0?[{src:"LT 도전 페이스", pace:ltHard*(1+eleBoostPct), desc:"LT×"+ltMults.hard.toFixed(2)+" · 최상의 날 기준", isRecommended:false}]:[]),
+          ...(dataPred>0?[{src:"훈련 기반", pace:dataPred*(1+eleBoostPct), desc:dataLabel, isRecommended:false}]:[]),
+        ];
+      } else if (lt > 0 && dataPace > 0) {
+        // VDOT 없음: LT + 훈련 블렌딩
+        var ltPred2  = lt * ltMults.mid * condFactor;
+        var ltHard2  = lt * ltMults.hard * condFactor;
+        var dataPred2 = dataPace * condFactor;
+        var blend = recentLongPace > 0 ? 0.5 : 0.3;
+        var blended2 = ltPred2*(1-blend) + dataPred2*blend;
+        rows = [
+          {src:"도전 페이스 (LT×"+ltMults.hard.toFixed(2)+")", pace:ltHard2*(1+eleBoostPct), desc:"LT 기반 최적 페이스", isRecommended:false},
+          {src:"통합 예측 (추천)", pace:blended2*(1+eleBoostPct), desc:"LT+훈련 통합 · "+condLabel, isRecommended:true},
+          {src:"훈련 기반", pace:dataPred2*(1+eleBoostPct), desc:dataLabel+" · "+dataConfidence, isRecommended:false},
         ];
       } else if (lt > 0) {
-        // LT만 있을 때
         rows = [
           {src:"도전 페이스 (LT×"+ltMults.hard.toFixed(2)+")", pace:lt*ltMults.hard*condFactor*(1+eleBoostPct), desc:"충분히 훈련된 경우", isRecommended:false},
           {src:"현실적 예측 (LT×"+ltMults.mid.toFixed(2)+")", pace:lt*ltMults.mid*condFactor*(1+eleBoostPct), desc:"일반적 레이스 기준", isRecommended:true},
           {src:"여유 페이스 (LT×"+ltMults.easy.toFixed(2)+")", pace:lt*ltMults.easy*condFactor*(1+eleBoostPct), desc:"처음 도전 / 완주 목표", isRecommended:false},
         ];
+      } else if (vdotPace > 0) {
+        rows = [
+          {src:"VDOT 예측", pace:vdotPace*condFactor*(1+eleBoostPct), desc:"VDOT "+vdotScore.toFixed(1)+" 기반", isRecommended:true},
+        ];
       } else if (dataPace > 0) {
-        // 훈련 데이터만 있을 때
         rows = [
           {src:"낙관적", pace:dataPace*condFactor*(1+eleBoostPct)*0.95, desc:dataLabel+" · 컨디션 최상", isRecommended:false},
           {src:"현실적 (추천)", pace:dataPace*condFactor*(1+eleBoostPct), desc:dataLabel+" · "+condLabel, isRecommended:true},
@@ -1412,7 +1482,7 @@ export default function App() {
             <div style={Object.assign(cardStyle(),{marginBottom:14,borderLeft:"3px solid "+C.gold})}>
               <div style={secTitle(C.gold)}>ℹ️  ABOUT</div>
               <div style={{fontSize:12,color:"#a8b4c8",lineHeight:1.9}}>
-                Garmin Connect의 <strong style={{color:C.text}}>젖산 역치 페이스 / FTP</strong> 값을 입력해두세요.<br />
+                Garmin Connect에서 확인한 <strong style={{color:C.text}}>역치 페이스 / FTP</strong>를 입력해두세요.<br />
                 훈련 데이터가 쌓일수록 예측이 더 정밀해집니다.
               </div>
             </div>
@@ -1432,12 +1502,44 @@ export default function App() {
             </div>
             <div style={Object.assign(cardStyle(),{marginBottom:10,borderLeft:"3px solid "+C.accent})}>
               <div style={secTitle()}>// 러닝 퍼포먼스</div>
-              <div style={{fontSize:11,color:C.muted,marginBottom:14}}>Garmin Connect → 나의 통계 → 달리기 역치</div>
+              <div style={{fontSize:11,color:C.muted,marginBottom:14,lineHeight:1.7}}>
+                Garmin Connect → 나의 통계 → 달리기 역치 페이스<br />
+                <span style={{color:"#4a5568"}}>※ 가민이 알려주는 "역치 페이스"가 바로 여기 입력값이에요.</span>
+              </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
                 <div>
-                  <div style={labelStyle()}>LT2 페이스 (min/km)</div>
-                  <input type="number" value={profile.ltPaceMinKm} onChange={function(e){setProfile(function(p){return Object.assign({},p,{ltPaceMinKm:e.target.value});});}} placeholder="예: 5.25" step="0.01" style={inputStyle()} />
-                  <div style={{fontFamily:"monospace",fontSize:10,color:C.muted,marginTop:4}}>{profile.ltPaceMinKm?"→ "+formatPace(parseFloat(profile.ltPaceMinKm)):"Garmin 역치 페이스"}</div>
+                  <div style={labelStyle()}>역치 페이스</div>
+                  <div style={{display:"flex",alignItems:"center",gap:4}}>
+                    <input
+                      type="text"
+                      value={profile.ltPaceMinKm ? (function(){
+                        var v = parseFloat(profile.ltPaceMinKm);
+                        var m = Math.floor(v);
+                        var s = Math.round((v-m)*60);
+                        return m+":"+String(s).padStart(2,"0");
+                      })() : ""}
+                      onChange={function(e){
+                        var raw = e.target.value.replace(/['"]/g,'').trim();
+                        // MM:SS 또는 M'SS 또는 소수 형식 모두 허용
+                        var mmss = raw.match(/^(\d+)[:'\'′](\d{1,2})["″]?$/);
+                        if (mmss) {
+                          var dec = parseInt(mmss[1]) + parseInt(mmss[2])/60;
+                          setProfile(function(p){return Object.assign({},p,{ltPaceMinKm:dec.toFixed(4)});});
+                        } else if (!isNaN(parseFloat(raw)) && raw !== "") {
+                          setProfile(function(p){return Object.assign({},p,{ltPaceMinKm:raw});});
+                        } else if (raw === "") {
+                          setProfile(function(p){return Object.assign({},p,{ltPaceMinKm:""});});
+                        }
+                      }}
+                      placeholder="예: 4:16"
+                      style={inputStyle()}
+                    />
+                  </div>
+                  <div style={{fontFamily:"monospace",fontSize:10,color:C.muted,marginTop:4}}>
+                    {profile.ltPaceMinKm
+                      ? "→ "+formatPace(parseFloat(profile.ltPaceMinKm))+" / km"
+                      : "가민 역치 페이스 (분'초\" 형식)"}
+                  </div>
                 </div>
                 <div>
                   <div style={labelStyle()}>LTHR (bpm)</div>
@@ -1458,6 +1560,80 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {/* VDOT 입력 */}
+              <div style={{marginTop:16,paddingTop:14,borderTop:"1px solid "+C.border}}>
+                <div style={{fontFamily:"monospace",fontSize:10,color:"#a0b0ff",letterSpacing:2,marginBottom:8}}>
+                  📐 VDOT (Jack Daniels) — 로드런 예측 정밀도 향상
+                </div>
+                <div style={{fontSize:11,color:C.muted,marginBottom:10,lineHeight:1.7}}>
+                  최근 공인 레이스 기록으로 자동 계산하거나 직접 입력.
+                  <span style={{color:"#4a5568"}}> 로드런 예측 시 LT·훈련 데이터와 교차검증해요.</span>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:10}}>
+                  <div>
+                    <div style={labelStyle()}>레이스 거리 (km)</div>
+                    <input type="number" value={profile.recentRaceDist}
+                      onChange={function(e){
+                        setProfile(function(p){return Object.assign({},p,{recentRaceDist:e.target.value});});
+                      }}
+                      placeholder="예: 21.1" step="0.1" style={inputStyle()} />
+                  </div>
+                  <div>
+                    <div style={labelStyle()}>완주 시간 (분)</div>
+                    <input type="number" value={profile.recentRaceTime}
+                      onChange={function(e){
+                        var t = parseFloat(e.target.value);
+                        var d = parseFloat(profile.recentRaceDist);
+                        setProfile(function(p){
+                          var v = Object.assign({},p,{recentRaceTime:e.target.value});
+                          if (t>0 && d>0) v.vdot = calcVDOT(d,t).toString();
+                          return v;
+                        });
+                      }}
+                      placeholder="예: 107 (1:47)" style={inputStyle()} />
+                  </div>
+                  <div>
+                    <div style={labelStyle()}>VDOT 점수</div>
+                    <input type="number" value={profile.vdot}
+                      onChange={function(e){setProfile(function(p){return Object.assign({},p,{vdot:e.target.value});});}}
+                      placeholder="자동계산 또는 입력" step="0.1" style={inputStyle()} />
+                    <div style={{fontFamily:"monospace",fontSize:10,color:"#a0b0ff",marginTop:4}}>
+                      {profile.vdot ? "VDOT "+parseFloat(profile.vdot).toFixed(1) : "레이스 기록 입력 시 자동"}
+                    </div>
+                  </div>
+                </div>
+                {/* VDOT 훈련 페이스 참고표 */}
+                {profile.vdot && !isNaN(parseFloat(profile.vdot)) && (function(){
+                  var vd = parseFloat(profile.vdot);
+                  var paces = vdotTrainingPaces(vd);
+                  return (
+                    <div style={{background:"rgba(100,130,255,0.06)",border:"1px solid rgba(100,130,255,0.2)",padding:"10px 14px"}}>
+                      <div style={{fontFamily:"monospace",fontSize:10,color:"#a0b0ff",marginBottom:6,letterSpacing:2}}>
+                        VDOT {vd.toFixed(1)} 기반 훈련 페이스
+                      </div>
+                      <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
+                        {[["E(이지)",paces.easy],["M(마라톤)",paces.marathon],["T(역치)",paces.tempo],["I(인터벌)",paces.interval]].map(function(item){
+                          return <span key={item[0]} style={{fontFamily:"monospace",fontSize:11}}>
+                            <span style={{color:C.muted}}>{item[0]}: </span>
+                            <span style={{color:C.text}}>{formatPace(item[1])}</span>
+                          </span>;
+                        })}
+                      </div>
+                      <div style={{display:"flex",gap:14,flexWrap:"wrap",marginTop:8}}>
+                        {[["5K",5],["10K",10],["하프",21.1],["풀마",42.195]].map(function(item){
+                          var pace = vdotToPaceMinKm(vd, item[1]);
+                          var total = pace * item[1];
+                          return <span key={item[0]} style={{fontFamily:"monospace",fontSize:11}}>
+                            <span style={{color:C.muted}}>{item[0]}: </span>
+                            <span style={{color:"#a0b0ff"}}>{Math.floor(total/60)+"h"+String(Math.round(total%60)).padStart(2,"0")+"m"}</span>
+                          </span>;
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
             </div>
             <div style={Object.assign(cardStyle(),{marginBottom:10,borderLeft:"3px solid "+C.blue})}>
               <div style={secTitle(C.blue)}>// 사이클링 퍼포먼스</div>
