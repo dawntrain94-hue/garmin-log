@@ -1010,54 +1010,80 @@ export default function App() {
       var score = 0, maxScore = 0;
       var goods = [], warnings = [], details = [];
 
+      // 종목별 주간 볼륨 기준
+      // 러닝: 목표 거리의 50%/주, 사이클: 목표 거리의 100%/주 (사이클은 회복이 빨라 볼륨 많음)
+      var volTarget = isCyclingTarget ? raceKm * 1.0 : raceKm * 0.5;
+
       // ① 주간 볼륨
       maxScore += 25;
-      var volRatio = weeklyVolKm > 0 && raceKm > 0 ? weeklyVolKm/raceKm : 0;
-      if (volRatio >= 0.8)      { score += 25; goods.push("주간 볼륨 충분 — "+weeklyVolKm.toFixed(0)+"km/주"); }
-      else if (volRatio >= 0.5) { score += 15; details.push("주간 볼륨 보통 — "+weeklyVolKm.toFixed(0)+"km/주 (목표의 "+Math.round(volRatio*100)+"%)"); }
-      else if (volRatio > 0)    { score += 5;  warnings.push("주간 볼륨 부족 — "+weeklyVolKm.toFixed(0)+"km/주, "+Math.round(raceKm*0.5)+"km 이상 권장"); }
-      else                       { warnings.push("최근 7일 훈련 없음"); }
+      var volRatio = weeklyVolKm > 0 && volTarget > 0 ? weeklyVolKm/volTarget : 0;
+      if (volRatio >= 1.2)      { score += 25; goods.push("주간 볼륨 충분 — "+weeklyVolKm.toFixed(0)+"km/주"); }
+      else if (volRatio >= 0.7) { score += 15; details.push("주간 볼륨 보통 — "+weeklyVolKm.toFixed(0)+"km/주"); }
+      else if (volRatio > 0) {
+        score += 5;
+        var rec = isCyclingTarget
+          ? Math.round(volTarget)+"km/주 이상 권장"
+          : Math.round(raceKm*0.5)+"km/주 이상 권장";
+        warnings.push("주간 볼륨 부족 — "+weeklyVolKm.toFixed(0)+"km/주, "+rec);
+      } else { warnings.push("최근 7일 훈련 없음"); }
 
-      // ② 롱런
+      // ② 롱런/롱라이드 (사이클은 60%, 러닝은 70% 기준)
       maxScore += 30;
-      var longRunActs = fitnessActs.filter(function(a){return a.distanceKm>=raceKm*0.7;});
-      var midRunActs  = fitnessActs.filter(function(a){return a.distanceKm>=raceKm*0.5;});
-      if (longRunActs.length >= 2)      { score += 30; goods.push("롱런 충분 — "+Math.round(raceKm*0.7)+"km 이상 "+longRunActs.length+"회"); }
-      else if (longRunActs.length >= 1) { score += 20; goods.push("롱런 1회 — 목표의 70% 이상 달성"); }
-      else if (midRunActs.length >= 1)  { score += 10; warnings.push("롱런 부족 — "+Math.round(raceKm*0.7)+"km 이상 훈련 1회 이상 권장"); }
-      else                               { warnings.push("장거리 훈련 없음 — "+Math.round(raceKm*0.5)+"km 이상 훈련 필요"); }
+      var longThresh = isCyclingTarget ? raceKm * 0.6 : raceKm * 0.7;
+      var midThresh  = isCyclingTarget ? raceKm * 0.4 : raceKm * 0.5;
+      var longActs2  = fitnessActs.filter(function(a){return a.distanceKm>=longThresh;});
+      var midActs2   = fitnessActs.filter(function(a){return a.distanceKm>=midThresh;});
+      var actLabel   = isCyclingTarget ? "롱라이드" : "롱런";
+      if (longActs2.length >= 2)      { score += 30; goods.push(actLabel+" 충분 — "+Math.round(longThresh)+"km 이상 "+longActs2.length+"회"); }
+      else if (longActs2.length >= 1) { score += 20; goods.push(actLabel+" 1회 — 목표의 "+Math.round(longThresh/raceKm*100)+"% 달성"); }
+      else if (midActs2.length >= 1)  { score += 10; warnings.push(actLabel+" 부족 — "+Math.round(longThresh)+"km 이상 훈련 1회 권장"); }
+      else                             { warnings.push("장거리 훈련 없음 — "+Math.round(midThresh)+"km 이상 훈련 필요"); }
 
-      // ③ 훈련 빈도
+      // ③ 훈련 빈도 (주 3회 기준)
       maxScore += 20;
       var daysSpanned = Math.max(1, Math.min(42, fitnessActs.length > 1 ? (function(){
         var dates = fitnessActs.map(function(a){return new Date(a.activityDate||a.uploadedAt).getTime();});
         return Math.round((Math.max.apply(null,dates)-Math.min.apply(null,dates))/86400000)+1;
       })() : 7));
       var weeklyFreq = fitnessActs.length / (daysSpanned/7);
-      if (weeklyFreq >= 4)      { score += 20; goods.push("훈련 빈도 양호 — 주 "+weeklyFreq.toFixed(1)+"회"); }
-      else if (weeklyFreq >= 3) { score += 15; details.push("훈련 빈도 보통 — 주 "+weeklyFreq.toFixed(1)+"회"); }
-      else if (weeklyFreq > 0)  { score += 5;  warnings.push("훈련 빈도 부족 — 주 "+weeklyFreq.toFixed(1)+"회, 3회 이상 권장"); }
+      if (weeklyFreq >= 4)       { score += 20; goods.push("훈련 빈도 양호 — 주 "+weeklyFreq.toFixed(1)+"회"); }
+      else if (weeklyFreq >= 3)  { score += 15; details.push("훈련 빈도 보통 — 주 "+weeklyFreq.toFixed(1)+"회"); }
+      else if (weeklyFreq > 0)   { score += 5;  warnings.push("훈련 빈도 부족 — 주 "+weeklyFreq.toFixed(1)+"회, 3회 이상 권장"); }
 
-      // ④ 훈련 페이스 vs 목표 페이스
+      // ④ 훈련 강도 평가
       maxScore += 25;
-      var targetPace = 0;
-      if (profile.vdot && parseFloat(profile.vdot)>0 && raceKm>0)
-        targetPace = vdotToPaceMinKm(parseFloat(profile.vdot), raceKm);
-      else if (profile.ltPaceMinKm && parseFloat(profile.ltPaceMinKm)>0)
-        targetPace = parseFloat(profile.ltPaceMinKm) * (raceKm<=10?1.06:raceKm<=21.1?1.12:1.18);
-
-      if (targetPace > 0 && recentAvgPace > 0) {
-        var paceGap = (recentAvgPace - targetPace) / targetPace * 100;
-        if (paceGap < 10)      { score += 25; goods.push("훈련 페이스 적절 — 목표와 "+paceGap.toFixed(0)+"% 차이"); }
-        else if (paceGap < 20) { score += 15; details.push("훈련 페이스 목표보다 "+paceGap.toFixed(0)+"% 느림 (롱런 포함 정상)"); }
-        else if (paceGap < 35) { score += 8;  warnings.push("훈련 평균 페이스("+formatPace(recentAvgPace)+") 목표("+formatPace(targetPace)+")보다 "+paceGap.toFixed(0)+"% 느림"); }
-        else                    {              warnings.push("훈련 페이스와 목표 차이 큼 — 인터벌/템포런 추가 권장"); }
+      if (!isCyclingTarget) {
+        // 러닝: 페이스 비교
+        var targetPace = 0;
+        if (profile.vdot && parseFloat(profile.vdot)>0 && raceKm>0)
+          targetPace = vdotToPaceMinKm(parseFloat(profile.vdot), raceKm);
+        else if (profile.ltPaceMinKm && parseFloat(profile.ltPaceMinKm)>0)
+          targetPace = parseFloat(profile.ltPaceMinKm) * (raceKm<=10?1.06:raceKm<=21.1?1.12:1.18);
+        if (targetPace > 0 && recentAvgPace > 0) {
+          var paceGap = (recentAvgPace - targetPace) / targetPace * 100;
+          if (paceGap < 10)      { score += 25; goods.push("훈련 페이스 적절 — 목표와 "+paceGap.toFixed(0)+"% 차이"); }
+          else if (paceGap < 20) { score += 15; details.push("훈련 페이스 목표보다 "+paceGap.toFixed(0)+"% 느림 (정상 범위)"); }
+          else if (paceGap < 35) { score += 8;  warnings.push("훈련 평균("+formatPace(recentAvgPace)+") 목표("+formatPace(targetPace)+")보다 "+paceGap.toFixed(0)+"% 느림"); }
+          else                    {              warnings.push("훈련 페이스와 목표 차이 큼 — 인터벌/템포런 추가 권장"); }
+        } else { score += 15; details.push("LT 또는 VDOT 입력 시 페이스 평가 가능"); }
+      } else {
+        // 사이클: IF 비교
+        if (profile.ftp && parseFloat(profile.ftp)>0) {
+          var pwrActsR = fitnessActs.filter(function(a){return a.avgPower&&a.avgPower>0;});
+          if (pwrActsR.length >= 2) {
+            var avgPwrR = pwrActsR.reduce(function(a,b){return a+b.avgPower;},0)/pwrActsR.length;
+            var ifR = avgPwrR/parseFloat(profile.ftp);
+            if (ifR >= 0.65)      { score += 25; goods.push("훈련 강도 적절 — 평균 IF "+ifR.toFixed(2)); }
+            else if (ifR >= 0.55) { score += 15; details.push("훈련 강도 보통 — 평균 IF "+ifR.toFixed(2)); }
+            else                   { score += 5;  warnings.push("훈련 강도 낮음 — Sweet Spot(FTP×88~93%) 훈련 추가 권장"); }
+          } else { score += 15; details.push("FIT 파일 업로드 시 파워 기반 강도 평가 가능"); }
+        } else { score += 15; details.push("FTP 입력 시 훈련 강도 평가 가능"); }
       }
 
       var pct = maxScore > 0 ? Math.round(score/maxScore*100) : 0;
       var level = pct >= 75 ? "충분" : pct >= 50 ? "보통" : pct >= 25 ? "부족" : "매우 부족";
       var color = pct >= 75 ? "#00e5a0" : pct >= 50 ? "#ffb830" : "#ff6b35";
-      return {score:pct, level:level, color:color, goods:goods, details:details, warnings:warnings, raceKm:raceKm};
+      return {score:pct, level:level, color:color, goods:goods, details:details, warnings:warnings};
     })();
 
     // 사이클: 훈련 IF 기반 파워존 조정
