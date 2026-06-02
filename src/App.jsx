@@ -958,7 +958,7 @@ export default function App() {
     var lthrRef2 = profile.ltHR ? parseFloat(profile.ltHR) : 0;
     var maxHRRef = profile.maxHR ? parseFloat(profile.maxHR) : (lthrRef2 > 0 ? lthrRef2/0.87 : 0);
 
-    function crossTRIMP(act, towardCycling) {
+    function crossTRIMP(act, towardCycling, lthrRef2, maxHRRef) {
       // 운동 시간 추정 (없으면 거리/평균속도)
       var durMin = act.durationMin || 0;
       if (!durMin && act.distanceKm > 0 && act.avgPaceMinKm > 0)
@@ -992,9 +992,9 @@ export default function App() {
     }
 
     // 피트니스 기여: 42일 크로스트레이닝 TRIMP 합산
-    var crossTRIMP42 = cross42.reduce(function(a,b){return a+crossTRIMP(b,isCyclingTarget);},0);
+    var crossTRIMP42 = cross42.reduce(function(a,b){return a+crossTRIMP(b,isCyclingTarget,lthrRef2,maxHRRef);},0);
     // 이번 주 크로스 피로 기여: 7일 TRIMP
-    var crossTRIMP7  = cross7.reduce(function(a,b){return a+crossTRIMP(b,isCyclingTarget);},0);
+    var crossTRIMP7  = cross7.reduce(function(a,b){return a+crossTRIMP(b,isCyclingTarget,lthrRef2,maxHRRef);},0);
 
     // 동종 훈련 TRIMP (비교 기준)
     var sameTRIMP42 = fitnessActs.reduce(function(a,b){
