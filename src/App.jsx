@@ -997,10 +997,13 @@ export default function App() {
     // 이번 주 크로스 피로 기여: 7일 TRIMP
     var crossTRIMP7  = cross7.reduce(function(a,b){return a+crossTRIMP(b,isCyclingTarget,lthrRef2,maxHRRef);},0);
 
-    // 동종 훈련 TRIMP (비교 기준)
+    // 피트니스 창: 6~10주 데이터 우선 (CTL 42일), 없으면 70일
+    var fitnessActs = ctl42.length >= 3 ? ctl42 : (ctl70.length >= 2 ? ctl70 : relevantActs);
+
+    // 동종 훈련 TRIMP (fitnessActs 정의 후 계산)
     var sameTRIMP42 = fitnessActs.reduce(function(a,b){
       var dur = b.durationMin || (b.distanceKm && b.avgPaceMinKm ? b.distanceKm*b.avgPaceMinKm : 0);
-      return a + dur * 0.7; // 훈련 평균 강도 Z3 가정
+      return a + dur * 0.7;
     },0);
     var sameTRIMP7  = atl7.reduce(function(a,b){
       var dur = b.durationMin || (b.distanceKm && b.avgPaceMinKm ? b.distanceKm*b.avgPaceMinKm : 0);
@@ -1012,16 +1015,11 @@ export default function App() {
       ? Math.round(crossTRIMP42 / (sameTRIMP42 + crossTRIMP42) * 100)
       : 0;
 
-    // 기존 호환을 위한 dummy (볼륨 계산에는 더 이상 크로스 거리 사용 안 함)
+    // 주간 볼륨: 동종 + 크로스 환산 합산 (ATL 방식)
     var crossVolKmEquiv = 0;
     var crossWeeklyKmEquiv = 0;
-    var CROSS_WEIGHT = 0;
 
-    // 피트니스 창: 6~10주 데이터 우선 (CTL 42일), 없으면 70일
-    var fitnessActs = ctl42.length >= 3 ? ctl42 : (ctl70.length >= 2 ? ctl70 : relevantActs);
-
-    // 주간 볼륨: 동종 + 크로스 환산 합산 (ATL 방식)
-    var wk1Km = atl7.reduce(function(a,b){return a+b.distanceKm;},0) + crossWeeklyKmEquiv;
+    var wk1Km = atl7.reduce(function(a,b){return a+b.distanceKm;},0);
     var wk2to4Km = cond28.filter(function(a){return now-new Date(a.activityDate||a.uploadedAt).getTime()>=7*DAY;})
       .reduce(function(a,b){return a+b.distanceKm;},0);
     var weeklyVolKm = wk1Km * 0.5 + (wk2to4Km/3) * 0.5;
