@@ -1014,16 +1014,16 @@ export default function App() {
       // 러닝: 목표 거리의 50%/주, 사이클: 목표 거리의 100%/주 (사이클은 회복이 빨라 볼륨 많음)
       var volTarget = isCyclingTarget ? raceKm * 1.0 : raceKm * 0.5;
 
-      // ① 주간 볼륨
-      maxScore += 25;
-      var volRatio = weeklyVolKm > 0 && volTarget > 0 ? weeklyVolKm/volTarget : 0;
+      // 주간 볼륨: 이번 주 실제 거리 기준 (블렌딩 값 아님)
+      var thisWeekKm = parseFloat(analysis.trainingSummary ? analysis.trainingSummary.wk7km : weeklyVolKm);
+      var volRatio = thisWeekKm > 0 && volTarget > 0 ? thisWeekKm/volTarget : 0;
       if (volRatio >= 1.2) {
         score += 25;
         if (isCyclingTarget) {
           var wk7km2 = atl7.reduce(function(a,b){return a+b.distanceKm;},0).toFixed(0);
           goods.push("주간 라이딩 충분 — "+atl7.length+"회 / "+wk7km2+"km");
         } else {
-          goods.push("주간 러닝 볼륨 충분 — "+weeklyVolKm.toFixed(0)+"km");
+          goods.push("주간 러닝 볼륨 충분 — "+thisWeekKm.toFixed(0)+"km");
         }
       } else if (volRatio >= 0.7) {
         score += 15;
@@ -1031,7 +1031,7 @@ export default function App() {
           var wk7km3 = atl7.reduce(function(a,b){return a+b.distanceKm;},0).toFixed(0);
           details.push("주간 라이딩 보통 — "+atl7.length+"회 / "+wk7km3+"km");
         } else {
-          details.push("주간 러닝 볼륨 보통 — "+weeklyVolKm.toFixed(0)+"km");
+          details.push("주간 러닝 볼륨 보통 — "+thisWeekKm.toFixed(0)+"km");
         }
       }
       else if (volRatio > 0) {
@@ -1043,7 +1043,7 @@ export default function App() {
           var wk7km = atl7.reduce(function(a,b){return a+b.distanceKm;},0).toFixed(0);
           warnings.push("주간 라이딩 "+atl7.length+"회 / "+wk7km+"km — "+rec);
         } else {
-          warnings.push("주간 러닝 "+weeklyVolKm.toFixed(0)+"km — "+rec);
+          warnings.push("주간 러닝 "+thisWeekKm.toFixed(0)+"km — "+rec);
         }
       } else { warnings.push("최근 7일 훈련 없음"); }
 
@@ -1343,6 +1343,8 @@ export default function App() {
       count: fitnessActs.length,
       totalKm: totalVolKm.toFixed(0),
       weeklyKm: weeklyVolKm.toFixed(0),
+      wk7km: wk1Km.toFixed(0),
+      wk4avg: (wk2to4Km/3).toFixed(0),
       maxDist: maxActDist.toFixed(1),
       fitnessWindow: fitnessWindowLabel,
       condLabel: condLabel,
@@ -2058,7 +2060,8 @@ export default function App() {
                       {[
                         ["활동(창내)", analysis.trainingSummary.count+"개"],
                         ["총 거리", analysis.trainingSummary.totalKm+"km"],
-                        ["주간 볼륨", analysis.trainingSummary.weeklyKm+"km/주"],
+                        ["이번 주", analysis.trainingSummary.wk7km+"km"],
+                        ["4주 평균", analysis.trainingSummary.wk4avg+"km/주"],
                         ["최장 거리", analysis.trainingSummary.maxDist+"km"],
                         ...(analysis.trainingSummary.isCycling ? [
                           ...(analysis.trainingSummary.avgPower ? [["평균 파워", analysis.trainingSummary.avgPower]] : []),
