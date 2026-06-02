@@ -950,18 +950,71 @@ export default function App() {
     var cross42 = crossActs.filter(function(a){return now-new Date(a.activityDate||a.uploadedAt).getTime()<42*DAY;});
     var cross7  = crossActs.filter(function(a){return now-new Date(a.activityDate||a.uploadedAt).getTime()<7*DAY;});
 
-    // 크로스트레이닝 유산소 기여 환산 (항목별 가중치 적용)
-    // 트레일↔로드: 85% (심폐 거의 동일), 사이클↔러닝: 25%
-    var crossVolKmEquiv = cross42.reduce(function(a, b) {
-      var w = getCrossWeight(b);
-      var equiv = isCyclingTarget ? b.distanceKm/3 : b.distanceKm; // 사이클은 러닝 1/3 환산
-      return a + equiv * w;
-    }, 0);
-    var crossWeeklyKmEquiv = cross7.reduce(function(a, b) {
-      var w = getCrossWeight(b);
-      var equiv = isCyclingTarget ? b.distanceKm/3 : b.distanceKm;
-      return a + equiv * w;
-    }, 0);
+    // 크로스트레이닝: 거리 환산 → 시간×강도(TRIMP) 기반으로 교체
+    // 근거: 거리는 종목 간 비교 불가, 운동 시간×심박 강도가 유일한 공통 지표
+    // (Banister TRIMP: load = duration × HR_ratio × e^(1.92×HR_ratio))
+    // 실용화: durationMin × intensityFactor로 단순화
+    // intensityFactor: Z2(0.3) / Z3(0.6) / Z4+(1.0) — 러닝이 사이클보다 VO2 전이 더 큼
+    var lthrRef2 = profile.ltHR ? parseFloat(profile.ltHR) : 0;
+    var maxHRRef = profile.maxHR ? parseFloat(profile.maxHR) : (lthrRef2 > 0 ? lthrRef2/0.87 : 0);
+
+    function crossTRIMP(act, towardCycling) {
+      // 운동 시간 추정 (없으면 거리/평균속도)
+      var durMin = act.durationMin || 0;
+      if (!durMin && act.distanceKm > 0 && act.avgPaceMinKm > 0)
+        durMin = act.distanceKm * act.avgPaceMinKm;
+
+      // 강도 계수 (심박 기반 우선, 없으면 페이스/속도 기반 추정)
+      var intensityF = 0.4; // 기본값 (중간 강도)
+      var hrRef = maxHRRef > 0 ? maxHRRef : (lthrRef2 > 0 ? lthrRef2/0.87 : 0);
+      if (act.avgHR && hrRef > 0) {
+        var hrRatio = act.avgHR / hrRef;
+        if (hrRatio < 0.65)      intensityF = 0.20; // Z1 회복
+        else if (hrRatio < 0.75) intensityF = 0.35; // Z2 유산소
+        else if (hrRatio < 0.85) intensityF = 0.60; // Z3 템포
+        else if (hrRatio < 0.92) intensityF = 0.85; // Z4 역치
+        else                     intensityF = 1.00; // Z5 VO2max
+      }
+
+      // 종목별 VO2 전이 계수
+      // 러닝→사이클: 심폐 전이 80%, 근육 특이성 낮음
+      // 사이클→러닝: 심폐 전이 70%, 충격 부하 적응 안됨
+      // 트레일→로드: 심폐 거의 동일, 지형 차이만 (90%)
+      var transferRate = 0.7;
+      if (!towardCycling) { // 러닝 예측 시 크로스 = 사이클
+        transferRate = 0.70;
+      } else { // 사이클 예측 시 크로스 = 러닝
+        var isCrossTrail = (act.sport === "trail_run");
+        transferRate = isCrossTrail ? 0.75 : 0.80;
+      }
+
+      return durMin * intensityF * transferRate; // TRIMP 점수 (분 단위)
+    }
+
+    // 피트니스 기여: 42일 크로스트레이닝 TRIMP 합산
+    var crossTRIMP42 = cross42.reduce(function(a,b){return a+crossTRIMP(b,isCyclingTarget);},0);
+    // 이번 주 크로스 피로 기여: 7일 TRIMP
+    var crossTRIMP7  = cross7.reduce(function(a,b){return a+crossTRIMP(b,isCyclingTarget);},0);
+
+    // 동종 훈련 TRIMP (비교 기준)
+    var sameTRIMP42 = fitnessActs.reduce(function(a,b){
+      var dur = b.durationMin || (b.distanceKm && b.avgPaceMinKm ? b.distanceKm*b.avgPaceMinKm : 0);
+      return a + dur * 0.7; // 훈련 평균 강도 Z3 가정
+    },0);
+    var sameTRIMP7  = atl7.reduce(function(a,b){
+      var dur = b.durationMin || (b.distanceKm && b.avgPaceMinKm ? b.distanceKm*b.avgPaceMinKm : 0);
+      return a + dur * 0.7;
+    },0);
+
+    // 크로스 기여 비율 (표시용)
+    var crossContribPct = sameTRIMP42 > 0
+      ? Math.round(crossTRIMP42 / (sameTRIMP42 + crossTRIMP42) * 100)
+      : 0;
+
+    // 기존 호환을 위한 dummy (볼륨 계산에는 더 이상 크로스 거리 사용 안 함)
+    var crossVolKmEquiv = 0;
+    var crossWeeklyKmEquiv = 0;
+    var CROSS_WEIGHT = 0;
 
     // 피트니스 창: 6~10주 데이터 우선 (CTL 42일), 없으면 70일
     var fitnessActs = ctl42.length >= 3 ? ctl42 : (ctl70.length >= 2 ? ctl70 : relevantActs);
@@ -1360,8 +1413,8 @@ export default function App() {
       avgPower: isCyclingSport&&recentAvgPower>0 ? recentAvgPower+"W" : null,
       avgSpeed: isCyclingSport&&recentAvgSpeed>0 ? recentAvgSpeed+"km/h" : null,
       crossCount: cross42.length,
-      crossKmEquiv: crossVolKmEquiv > 0 ? crossVolKmEquiv.toFixed(0) : null,
-      crossWeight: Math.round(CROSS_WEIGHT*100),
+      crossKmEquiv: crossContribPct > 5 ? crossContribPct+"%" : null,
+      crossWeight: crossContribPct,
     } : null;
 
     setAiText(null);
@@ -2088,15 +2141,14 @@ export default function App() {
                     {/* 크로스트레이닝 반영 표시 */}
                     {analysis.trainingSummary.crossCount > 0 && (
                       <div style={{marginTop:8,fontFamily:"monospace",fontSize:10,color:"rgba(77,159,255,0.8)",background:"rgba(77,159,255,0.06)",border:"1px solid rgba(77,159,255,0.2)",padding:"5px 10px",lineHeight:1.6}}>
-                        🔄 크로스트레이닝 반영: {analysis.trainingSummary.crossCount}개 활동
-                        {analysis.trainingSummary.crossKmEquiv && " · 유산소 환산 "+analysis.trainingSummary.crossKmEquiv+"km"}
+                        🔄 크로스트레이닝 {analysis.trainingSummary.crossCount}개 활동
+                        {analysis.trainingSummary.crossKmEquiv && " · 유산소 기여 "+analysis.trainingSummary.crossKmEquiv}
                         <br />
                         <span style={{color:C.muted}}>
+                          시간×강도(TRIMP) 기반 반영 — 거리 환산 없음
                           {analysis.trainingSummary.isCycling
-                            ? "러닝 훈련 심폐 기여 반영 — 페달링 효율은 미적용"
-                            : analysis.sport==="road_run"
-                              ? "트레일런 심폐 기여 85% + 사이클 25% 반영 — 페이스 기준은 로드런만"
-                              : "로드런 심폐 기여 85% + 사이클 25% 반영 — 페이스 기준은 트레일런만"}
+                            ? " · 러닝→사이클 VO2 전이 70~80%"
+                            : " · 사이클 전이 70%, 트레일→로드 90%"}
                         </span>
                       </div>
                     )}
