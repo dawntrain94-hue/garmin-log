@@ -1020,10 +1020,6 @@ export default function App() {
     var crossWeeklyKmEquiv = 0;
 
     var wk1Km = atl7.reduce(function(a,b){return a+b.distanceKm;},0);
-    // DEBUG: atl7 내용 확인
-    if (process && process.env && process.env.NODE_ENV === 'development') {
-      console.log('atl7:', atl7.map(function(a){return {name:a.name||a.fileName, dist:a.distanceKm, sport:a.sport, date:a.activityDate||a.uploadedAt};}));
-    }
     var wk2to4Km = cond28.filter(function(a){return now-new Date(a.activityDate||a.uploadedAt).getTime()>=7*DAY;})
       .reduce(function(a,b){return a+b.distanceKm;},0);
     var weeklyVolKm = wk1Km * 0.5 + (wk2to4Km/3) * 0.5;
