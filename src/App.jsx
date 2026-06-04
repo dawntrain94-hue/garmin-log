@@ -1301,6 +1301,9 @@ export default function App() {
 
       return {adj: adj, notes: notes};
     })();
+
+    // 사이클: 훈련 IF 기반 파워존 조정
+    var cyclingRows = null;
     if ((sport==="cycling"||sport==="mtb") && profile.ftp && courseData) {
       var effectiveEleGain = manualEleGain && parseFloat(manualEleGain) > 0 ? parseFloat(manualEleGain) : courseData.elevationGain;
       var effectiveCourseData = Object.assign({}, courseData, {elevationGain: effectiveEleGain});
