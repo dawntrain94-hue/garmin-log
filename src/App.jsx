@@ -256,7 +256,10 @@ function parseActivityFIT(buffer) {
             lats.push(recData[0] * (180/Math.pow(2,31)));
           if (recData[1] != null && recData[1] !== 0x7FFFFFFF)
             lons.push(recData[1] * (180/Math.pow(2,31)));
-          if (recData[2] != null) alts.push(recData[2]/5 - 500);
+          if (recData[2] != null && recData[2] !== 0xFFFF && recData[2] !== 0x1FFFF) {
+            var altVal = recData[2]/5 - 500;
+            if (altVal > -500 && altVal < 9000) alts.push(altVal); // 유효 범위 체크
+          }
           if (recData[3] != null && recData[3] > 0 && recData[3] < 250) hrs.push(recData[3]);
           if (recData[7] != null && recData[7] > 0 && recData[7] < 2500) powers.push(recData[7]);
           if (recData[6] != null && recData[6] > 0) speeds.push(recData[6]/1000);
@@ -1164,8 +1167,140 @@ export default function App() {
       return {score:pct, level:level, color:color, goods:goods, details:details, warnings:warnings};
     })();
 
-    // 사이클: 훈련 IF 기반 파워존 조정
-    var cyclingRows = null;
+    // ══════════════════════════════════════════════════════════════════
+    // ① 내구성 지수 (Durability Index)
+    // 롱라이드/롱런 훈련 이력 기반으로 후반 감속 계수 계산
+    // 근거: 장거리 훈련이 많을수록 피로 저항성이 높아짐 (Hamilton et al. 2024)
+    // ──────────────────────────────────────────────────────────────────
+    var durabilityIndex = (function(){
+      // 목표 거리의 60% 이상을 "장거리 훈련"으로 정의
+      var longThreshDur = raceKm * 0.60;
+      var longActs2 = fitnessActs.filter(function(a){return a.distanceKm >= longThreshDur;});
+      // 누적 장거리 훈련 거리
+      var totalLongKm = longActs2.reduce(function(a,b){return a+b.distanceKm;},0);
+
+      // 내구성 점수: 0~1
+      // 0 = 장거리 훈련 없음 (후반 큰 감속 예상)
+      // 1 = 충분한 장거리 훈련 (후반 감속 최소)
+      var score = 0;
+      if (longActs2.length >= 3) score = 1.0;
+      else if (longActs2.length === 2) score = 0.75;
+      else if (longActs2.length === 1) score = 0.50;
+      else if (fitnessActs.filter(function(a){return a.distanceKm>=raceKm*0.4;}).length >= 2) score = 0.30;
+      else score = 0.10;
+
+      // 후반 페이스 감속 예상 비율 (0% ~ 15%)
+      // 내구성 낮을수록 후반 더 느려짐
+      var lateDecayPct = (1 - score) * 0.12; // 최대 12% 감속
+
+      return {
+        score: score,
+        longActsCount: longActs2.length,
+        totalLongKm: totalLongKm.toFixed(0),
+        lateDecayPct: lateDecayPct,
+        label: score >= 0.75 ? "양호" : score >= 0.50 ? "보통" : "부족",
+        color: score >= 0.75 ? "#00e5a0" : score >= 0.50 ? "#ffb830" : "#ff6b35",
+      };
+    })();
+
+    // ══════════════════════════════════════════════════════════════════
+    // ② 훈련 강도 분배 분석 (TID - Training Intensity Distribution)
+    // 심박 데이터 기반 Z1/Z2/Z3 비율 계산
+    // 근거: 피라미드형 TID가 아마추어 엔듀어런스에 최적 (Magalhães et al. 2024)
+    // ──────────────────────────────────────────────────────────────────
+    var tidAnalysis = (function(){
+      var lthrN = profile.ltHR ? parseFloat(profile.ltHR) : 0;
+      var maxHRN = profile.maxHR ? parseFloat(profile.maxHR) : (lthrN>0 ? lthrN/0.87 : 0);
+      if (!lthrN && !maxHRN) return null;
+
+      var hrRef = maxHRN || lthrN/0.87;
+      var z1Count=0, z2Count=0, z3Count=0, total=0;
+
+      fitnessActs.forEach(function(a){
+        if (!a.avgHR) return;
+        total++;
+        var ratio = a.avgHR / hrRef;
+        if (ratio < 0.75) z1Count++;
+        else if (ratio < 0.87) z2Count++;
+        else z3Count++;
+      });
+
+      if (total === 0) return null;
+
+      var z1Pct = Math.round(z1Count/total*100);
+      var z2Pct = Math.round(z2Count/total*100);
+      var z3Pct = Math.round(z3Count/total*100);
+
+      // 피라미드형 이상: Z1 75~80% / Z2 15~20% / Z3 5~10%
+      // 양극화형: Z1 75~80% / Z2 5% / Z3 15~20%
+      var isPyramid = z1Pct >= 60 && z3Pct <= 20;
+      var isZ2Heavy = z2Pct > 40; // 역치 과다 (과훈련 위험)
+      var isZ3Heavy = z3Pct > 30; // 고강도 과다
+
+      var feedback = "";
+      if (isZ2Heavy) feedback = "역치 구간(Z2) 과다 — 회복 훈련 비율 늘리기 권장";
+      else if (isZ3Heavy) feedback = "고강도(Z3) 과다 — Z1 유산소 기반 강화 필요";
+      else if (z1Pct >= 60) feedback = "강도 분배 양호 — 피라미드형 유지";
+      else feedback = "Z1 유산소 훈련 비율 증가 권장 (현재 "+z1Pct+"%)";
+
+      return {z1Pct:z1Pct, z2Pct:z2Pct, z3Pct:z3Pct,
+              total:total, isPyramid:isPyramid,
+              feedback:feedback,
+              color: isPyramid ? "#00e5a0" : (isZ2Heavy||isZ3Heavy) ? "#ff6b35" : "#ffb830"};
+    })();
+
+    // ══════════════════════════════════════════════════════════════════
+    // ③ 심박 기반 회복 지표 개선
+    // 같은 거리라도 심박이 높으면 더 피로한 것 반영
+    // 현재 condFactor에 심박 강도 가중 추가
+    // ──────────────────────────────────────────────────────────────────
+    // (condFactor는 이미 crossTRIMP에서 심박 강도 반영하고 있음)
+    // 추가: 최근 7일 훈련 강도 심박 평균으로 추가 보정
+    var hrCondAdj = 1.0;
+    if (profile.ltHR && parseFloat(profile.ltHR) > 0 && atl7.length > 0) {
+      var lthrCond = parseFloat(profile.ltHR);
+      var recentHRActs = atl7.filter(function(a){return a.avgHR && a.avgHR > 0;});
+      if (recentHRActs.length > 0) {
+        var avgRecentHR = recentHRActs.reduce(function(a,b){return a+b.avgHR;},0)/recentHRActs.length;
+        var hrIntensity = avgRecentHR / lthrCond;
+        // 최근 7일 평균 심박이 LTHR보다 높으면 추가 피로 반영
+        if (hrIntensity > 1.05) hrCondAdj = 1.02;      // LTHR 5% 초과
+        else if (hrIntensity > 0.95) hrCondAdj = 1.01; // LTHR 근처
+        else if (hrIntensity < 0.75) hrCondAdj = 0.99; // 회복 훈련 위주
+      }
+    }
+    var condFactorFinal = Math.min(1.06, condFactor * hrCondAdj);
+
+    // ══════════════════════════════════════════════════════════════════
+    // ④ 성별/나이 보정 계수
+    // 근거: 동일 LT/VDOT이라도 나이·성별에 따라 레이스 퍼포먼스 다름
+    // 나이: 35세 이후 10년마다 VO2max ~10% 감소 (Joyner 2026)
+    // 성별: 여성은 지방 산화 비율이 높아 장거리 상대적 유리
+    // ──────────────────────────────────────────────────────────────────
+    var ageGenderAdj = (function(){
+      var age = profile.age ? parseFloat(profile.age) : 0;
+      var gender = profile.gender || "male";
+      var adj = 1.0;
+      var notes = [];
+
+      if (age >= 35) {
+        // 35세 이후 10년당 약 1% 페이스 패널티 (보수적 추정)
+        var agePenalty = Math.min(0.05, (age - 35) / 10 * 0.01);
+        adj += agePenalty;
+        if (agePenalty > 0.01) notes.push(age+"세 나이 보정 +"+Math.round(agePenalty*100)+"%");
+      }
+
+      if (gender === "female") {
+        // 여성: 장거리(21km+)에서 지방 산화 비율 높아 상대적으로 유리
+        // 단거리는 중립
+        if (raceKm >= 21.1) {
+          adj -= 0.005; // 0.5% 페이스 이점
+          notes.push("여성 장거리 지방산화 보정");
+        }
+      }
+
+      return {adj: adj, notes: notes};
+    })();
     if ((sport==="cycling"||sport==="mtb") && profile.ftp && courseData) {
       var effectiveEleGain = manualEleGain && parseFloat(manualEleGain) > 0 ? parseFloat(manualEleGain) : courseData.elevationGain;
       var effectiveCourseData = Object.assign({}, courseData, {elevationGain: effectiveEleGain});
@@ -1309,11 +1444,10 @@ export default function App() {
       // 훈련 데이터: 중간 (간접 지표)
       var rows = [];
       if (sport === "road_run" && vdotPace > 0) {
-        // VDOT은 레이스 실측 기반이라 condFactor 미적용 (이미 현실 반영)
-        // LT와 훈련 데이터에만 컨디션 보정
-        var vdotPred = vdotPace; // condFactor 없음
-        var ltPred   = lt > 0 ? lt * ltMults.mid * condFactor : 0;
-        var ltHard   = lt > 0 ? lt * ltMults.hard * condFactor : 0;
+        // VDOT은 레이스 실측 기반이라 condFactor 미적용
+        var vdotPred = vdotPace * ageGenderAdj.adj;
+        var ltPred   = lt > 0 ? lt * ltMults.mid * condFactorFinal * ageGenderAdj.adj : 0;
+        var ltHard   = lt > 0 ? lt * ltMults.hard * condFactorFinal * ageGenderAdj.adj : 0;
 
         // dataPace 신뢰도: 훈련 거리가 목표 거리와 비슷할수록 높음
         // 10K 예측인데 훈련이 5km짜리만 있으면 신뢰도 낮춤
@@ -1346,9 +1480,9 @@ export default function App() {
         ];
       } else if (lt > 0 && dataPace > 0) {
         // VDOT 없음: LT + 훈련 블렌딩
-        var ltPred2  = lt * ltMults.mid * condFactor;
-        var ltHard2  = lt * ltMults.hard * condFactor;
-        var dataPred2 = dataPace * condFactor;
+        var ltPred2  = lt * ltMults.mid * condFactorFinal * ageGenderAdj.adj;
+        var ltHard2  = lt * ltMults.hard * condFactorFinal * ageGenderAdj.adj;
+        var dataPred2 = dataPace * condFactorFinal * ageGenderAdj.adj;
         var blend = recentLongPace > 0 ? 0.5 : 0.3;
         var blended2 = ltPred2*(1-blend) + dataPred2*blend;
         rows = [
@@ -1358,9 +1492,9 @@ export default function App() {
         ];
       } else if (lt > 0) {
         rows = [
-          {src:"도전 페이스 (LT×"+ltMults.hard.toFixed(2)+")", pace:lt*ltMults.hard*condFactor*(1+eleBoostPct), desc:"충분히 훈련된 경우", isRecommended:false},
-          {src:"현실적 예측 (LT×"+ltMults.mid.toFixed(2)+")", pace:lt*ltMults.mid*condFactor*(1+eleBoostPct), desc:"일반적 레이스 기준", isRecommended:true},
-          {src:"여유 페이스 (LT×"+ltMults.easy.toFixed(2)+")", pace:lt*ltMults.easy*condFactor*(1+eleBoostPct), desc:"처음 도전 / 완주 목표", isRecommended:false},
+          {src:"도전 페이스 (LT×"+ltMults.hard.toFixed(2)+")", pace:lt*ltMults.hard*condFactorFinal*ageGenderAdj.adj*(1+eleBoostPct), desc:"충분히 훈련된 경우", isRecommended:false},
+          {src:"현실적 예측 (LT×"+ltMults.mid.toFixed(2)+")", pace:lt*ltMults.mid*condFactorFinal*ageGenderAdj.adj*(1+eleBoostPct), desc:"일반적 레이스 기준", isRecommended:true},
+          {src:"여유 페이스 (LT×"+ltMults.easy.toFixed(2)+")", pace:lt*ltMults.easy*condFactorFinal*ageGenderAdj.adj*(1+eleBoostPct), desc:"처음 도전 / 완주 목표", isRecommended:false},
         ];
       } else if (vdotPace > 0) {
         rows = [
@@ -1406,6 +1540,7 @@ export default function App() {
       maxDist: maxActDist.toFixed(1),
       fitnessWindow: fitnessWindowLabel,
       condLabel: condLabel,
+      condFactorFinal: condFactorFinal,
       isCycling: isCyclingSport,
       avgPace: (!isCyclingSport&&recentAvgPace>0) ? formatPace(recentAvgPace) : null,
       longPace: (!isCyclingSport&&recentLongPace>0) ? formatPace(recentLongPace) : null,
@@ -1414,6 +1549,9 @@ export default function App() {
       crossCount: cross42.length,
       crossKmEquiv: crossContribPct > 5 ? crossContribPct+"%" : null,
       crossWeight: crossContribPct,
+      durability: durabilityIndex,
+      tid: tidAnalysis,
+      ageGenderNotes: ageGenderAdj.notes,
     } : null;
 
     setAiText(null);
@@ -1472,7 +1610,6 @@ export default function App() {
               var items = [
                 ["러닝", runActs.length+"개 / "+runKm+"km"],
                 ["사이클", cycleActs.length+"개 / "+cycleKm+"km"],
-                ["누적 고도", totalEle+" m↑"],
                 ...(profile.ltPaceMinKm?[["LT 페이스",formatPace(parseFloat(profile.ltPaceMinKm))]]:[]),
                 ...(profile.ftp?[["FTP",profile.ftp+"W"]]:[]),
               ];
@@ -1609,14 +1746,30 @@ export default function App() {
                                       onMouseLeave={function(e){e.currentTarget.style.color="#2a3040";}}>✕</button>
                                   </div>
                                   <div style={{display:"flex",gap:10,flexWrap:"wrap",paddingLeft:24}}>
-                                    {[
-                                      [act.distanceKm+"km",C.text],[formatPace(act.avgPaceMinKm),C.accent],
-                                      [(act.elevationGain||0)+"m↑",C.gold],[act.avgHR?act.avgHR+"bpm":"—",C.red],
-                                      ...(act.avgPower?[[act.avgPower+"W",C.blue]]:[]),
-                                      ...(act.normalizedPower?[["NP "+act.normalizedPower+"W","#7ab8ff"]]:[]),
-                                      ...(act.tss?[["TSS "+Math.round(act.tss),"#a88fff"]]:[]),
-                                    ].map(function(v,i){return <div key={i} style={{fontFamily:"monospace",fontSize:12,fontWeight:700,color:v[1]}}>{v[0]}</div>;})}
+                                    {(function(){
+                                      var isCycleAct = (act.sport==="cycling"||act.sport==="mtb");
+                                      var speedOrPace = isCycleAct
+                                        ? (act.avgPaceMinKm>0 ? (60/act.avgPaceMinKm).toFixed(1)+"km/h" : "—")
+                                        : formatPace(act.avgPaceMinKm);
+                                      return [
+                                        [act.distanceKm+"km", C.text],
+                                        [speedOrPace, C.accent],
+                                        [(act.elevationGain||0)+"m↑", act.elevationGain>0?C.gold:"#2a3040"],
+                                        [act.avgHR?act.avgHR+"bpm":"—", C.red],
+                                        ...(act.avgPower?[[act.avgPower+"W",C.blue]]:[]),
+                                        ...(act.normalizedPower?[["NP "+act.normalizedPower+"W","#7ab8ff"]]:[]),
+                                        ...(act.tss?[["TSS "+Math.round(act.tss),"#a88fff"]]:[]),
+                                      ].map(function(v,i){
+                                        return <div key={i} style={{fontFamily:"monospace",fontSize:12,fontWeight:700,color:v[1]}}>{v[0]}</div>;
+                                      });
+                                    })()}
                                   </div>
+                                  {/* FIT 파일에서 고도 0인 경우 안내 */}
+                                  {(act.sport==="cycling"||act.sport==="mtb") && !act.elevationGain && act.hasPower && (
+                                    <div style={{paddingLeft:24,fontFamily:"monospace",fontSize:9,color:"#3a4560",marginTop:2}}>
+                                      고도 미포함 FIT — 예측 탭 수동 고도 입력 권장
+                                    </div>
+                                  )}
                                 </div>
                               );
                             })}
@@ -1738,6 +1891,13 @@ export default function App() {
                 <div>
                   <div style={labelStyle()}>LTHR (bpm)</div>
                   <input type="number" value={profile.ltHR} onChange={function(e){setProfile(function(p){return Object.assign({},p,{ltHR:e.target.value});});}} placeholder="예: 162" style={inputStyle()} />
+                </div>
+                <div>
+                  <div style={labelStyle()}>최대 심박 (bpm)</div>
+                  <input type="number" value={profile.maxHR||""} onChange={function(e){setProfile(function(p){return Object.assign({},p,{maxHR:e.target.value});});}} placeholder="예: 185" style={inputStyle()} />
+                  <div style={{fontFamily:"monospace",fontSize:10,color:C.muted,marginTop:4}}>
+                    {profile.maxHR ? "LTHR/HRmax = "+(parseFloat(profile.ltHR||0)/parseFloat(profile.maxHR)*100).toFixed(0)+"%" : "TID 분석·컨디션 정확도 향상"}
+                  </div>
                 </div>
                 <div>
                   <div style={labelStyle()}>VO2max 러닝</div>
@@ -2166,6 +2326,67 @@ export default function App() {
                     )}
                   </div>
                 )}
+
+                {/* 내구성 카드 */}
+                {analysis.trainingSummary&&analysis.trainingSummary.durability&&(
+                  <div style={Object.assign(cardStyle(),{marginBottom:10})}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+                      <div style={{fontFamily:"monospace",fontSize:10,color:analysis.trainingSummary.durability.color,letterSpacing:2}}>🏋️ 내구성 (Durability)</div>
+                      <div style={{fontFamily:"monospace",fontSize:12,fontWeight:700,color:analysis.trainingSummary.durability.color}}>
+                        {analysis.trainingSummary.durability.label}
+                      </div>
+                    </div>
+                    <div style={{background:C.surface2,height:5,marginBottom:8}}>
+                      <div style={{background:analysis.trainingSummary.durability.color,height:"100%",width:Math.round(analysis.trainingSummary.durability.score*100)+"%"}} />
+                    </div>
+                    <div style={{fontFamily:"monospace",fontSize:10,color:C.muted,lineHeight:1.8}}>
+                      <div>목표 거리 60% 이상 훈련: {analysis.trainingSummary.durability.longActsCount}회 / {analysis.trainingSummary.durability.totalLongKm}km</div>
+                      {analysis.trainingSummary.durability.lateDecayPct > 0.02
+                        ? <div style={{color:"#ff6b35"}}>⚠ 후반 페이스 저하 예상 ~{Math.round(analysis.trainingSummary.durability.lateDecayPct*100)}% — 롱라이드/롱런 추가 권장</div>
+                        : <div style={{color:"#00e5a0"}}>✓ 후반 페이스 유지 가능</div>
+                      }
+                    </div>
+                  </div>
+                )}
+
+                {/* TID 카드 */}
+                {analysis.trainingSummary&&analysis.trainingSummary.tid&&(
+                  <div style={Object.assign(cardStyle(),{marginBottom:10})}>
+                    <div style={{fontFamily:"monospace",fontSize:10,color:analysis.trainingSummary.tid.color,letterSpacing:2,marginBottom:8}}>
+                      📈 훈련 강도 분배 (TID)
+                    </div>
+                    <div style={{display:"flex",gap:8,marginBottom:8}}>
+                      {[["Z1 회복",analysis.trainingSummary.tid.z1Pct,"#4a7aff"],
+                        ["Z2 유산소",analysis.trainingSummary.tid.z2Pct,"#00e5a0"],
+                        ["Z3 고강도",analysis.trainingSummary.tid.z3Pct,"#ff6b35"]].map(function(z){
+                        return (
+                          <div key={z[0]} style={{flex:1,textAlign:"center"}}>
+                            <div style={{fontFamily:"monospace",fontSize:16,fontWeight:700,color:z[2]}}>{z[1]}%</div>
+                            <div style={{fontFamily:"monospace",fontSize:9,color:C.muted,marginBottom:3}}>{z[0]}</div>
+                            <div style={{background:C.surface2,height:4}}>
+                              <div style={{background:z[2],height:"100%",width:z[1]+"%"}} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{fontFamily:"monospace",fontSize:10,color:analysis.trainingSummary.tid.color}}>{analysis.trainingSummary.tid.feedback}</div>
+                    <div style={{fontFamily:"monospace",fontSize:9,color:C.muted,marginTop:4}}>
+                      심박 데이터 {analysis.trainingSummary.tid.total}개 활동 기반 · 최대심박 입력 시 정확도 향상
+                    </div>
+                  </div>
+                )}
+
+                {/* 나이/성별 보정 */}
+                {analysis.trainingSummary&&analysis.trainingSummary.ageGenderNotes&&analysis.trainingSummary.ageGenderNotes.length>0&&(
+                  <div style={Object.assign(cardStyle(),{marginBottom:10,borderLeft:"3px solid #a88fff"})}>
+                    <div style={{fontFamily:"monospace",fontSize:10,color:"#a88fff",letterSpacing:2,marginBottom:6}}>👤 개인 특성 보정</div>
+                    {analysis.trainingSummary.ageGenderNotes.map(function(n,i){
+                      return <div key={i} style={{fontFamily:"monospace",fontSize:10,color:C.muted}}>• {n}</div>;
+                    })}
+                  </div>
+                )}
+
                 {/* 러닝 예측 */}
                 {analysis.runningRows&&(
                   <div style={Object.assign(cardStyle(),{marginBottom:14})}>
