@@ -1108,6 +1108,8 @@ export default function App() {
       var volMin  = isCyclingTarget ? Math.floor(raceKm * 0.30) : Math.floor(raceKm * 0.40);
       var volGood = isCyclingTarget ? Math.floor(raceKm * 0.50) : Math.floor(raceKm * 0.70);
 
+      // ① 주간 볼륨
+      maxScore += 25;
       var thisWeekKm = atl7.reduce(function(a,b){return a+b.distanceKm;},0);
       var wk7label = isCyclingTarget
         ? atl7.length+"회 / "+thisWeekKm.toFixed(0)+"km"
