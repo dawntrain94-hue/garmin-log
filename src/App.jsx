@@ -1003,6 +1003,23 @@ export default function App() {
     // 피트니스 창: 6~10주 데이터 우선 (CTL 42일), 없으면 70일
     var fitnessActs = ctl42.length >= 3 ? ctl42 : (ctl70.length >= 2 ? ctl70 : relevantActs);
 
+    // 준비도/내구성 평가용 확장 활동 목록
+    // 트레일런 ↔ 로드런: 유산소 기저 85% 전이, 빈도·내구성에 반영
+    // 사이클: 러닝 준비도에 25% 반영 (심폐만)
+    // 페이스 계산에는 사용하지 않음 (종목 특이성 유지)
+    var fitnessActsForReadiness = fitnessActs.slice(); // 동종 100%
+    if (!isCyclingTarget) {
+      // 러닝 준비도: 반대 러닝군(트레일↔로드) 85% + 사이클 25% 가상 활동으로 추가
+      crossActs.forEach(function(ca) {
+        var w = (ca.sport==="trail_run"||ca.sport==="road_run") ? 0.85 : 0.25;
+        fitnessActsForReadiness.push(Object.assign({}, ca, {
+          distanceKm: ca.distanceKm * w,
+          _isCrossWeighted: true,
+          _crossWeight: w,
+        }));
+      });
+    }
+
     // 동종 훈련 TRIMP (fitnessActs 정의 후 계산)
     var sameTRIMP42 = fitnessActs.reduce(function(a,b){
       var dur = b.durationMin || (b.distanceKm && b.avgPaceMinKm ? b.distanceKm*b.avgPaceMinKm : 0);
@@ -1112,8 +1129,8 @@ export default function App() {
       maxScore += 30;
       var longThresh = isCyclingTarget ? raceKm * 0.6 : raceKm * 0.7;
       var midThresh  = isCyclingTarget ? raceKm * 0.4 : raceKm * 0.5;
-      var longActs2  = fitnessActs.filter(function(a){return a.distanceKm>=longThresh;});
-      var midActs2   = fitnessActs.filter(function(a){return a.distanceKm>=midThresh;});
+      var longActs2  = fitnessActsForReadiness.filter(function(a){return a.distanceKm>=longThresh;});
+      var midActs2   = fitnessActsForReadiness.filter(function(a){return a.distanceKm>=midThresh;});
       var actLabel   = isCyclingTarget ? "롱라이드" : "롱런";
       if (longActs2.length >= 2)      { score += 30; goods.push(actLabel+" 충분 — "+Math.round(longThresh)+"km 이상 "+longActs2.length+"회"); }
       else if (longActs2.length >= 1) { score += 20; goods.push(actLabel+" 1회 — 목표의 "+Math.round(longThresh/raceKm*100)+"% 달성"); }
@@ -1122,11 +1139,11 @@ export default function App() {
 
       // ③ 훈련 빈도 (주 3회 기준)
       maxScore += 20;
-      var daysSpanned = Math.max(1, Math.min(42, fitnessActs.length > 1 ? (function(){
-        var dates = fitnessActs.map(function(a){return new Date(a.activityDate||a.uploadedAt).getTime();});
+      var daysSpanned = Math.max(1, Math.min(42, fitnessActsForReadiness.length > 1 ? (function(){
+        var dates = fitnessActsForReadiness.map(function(a){return new Date(a.activityDate||a.uploadedAt).getTime();});
         return Math.round((Math.max.apply(null,dates)-Math.min.apply(null,dates))/86400000)+1;
       })() : 7));
-      var weeklyFreq = fitnessActs.length / (daysSpanned/7);
+      var weeklyFreq = fitnessActsForReadiness.length / (daysSpanned/7);
       if (weeklyFreq >= 4)       { score += 20; goods.push("훈련 빈도 양호 — 이번 주 "+Math.round(weeklyFreq)+"회 이상 훈련"); }
       else if (weeklyFreq >= 3)  { score += 15; details.push("훈련 빈도 보통 — 주 평균 "+Math.round(weeklyFreq)+"회 훈련"); }
       else if (weeklyFreq > 0)   { score += 5;  warnings.push("훈련 빈도 부족 — 최근 주 평균 "+Math.round(weeklyFreq)+"회, 꾸준한 훈련을 위해 주 3회 이상 권장"); }
@@ -1173,20 +1190,24 @@ export default function App() {
     // 근거: 장거리 훈련이 많을수록 피로 저항성이 높아짐 (Hamilton et al. 2024)
     // ──────────────────────────────────────────────────────────────────
     var durabilityIndex = (function(){
-      // 목표 거리의 60% 이상을 "장거리 훈련"으로 정의
       var longThreshDur = raceKm * 0.60;
-      var longActs2 = fitnessActs.filter(function(a){return a.distanceKm >= longThreshDur;});
-      // 누적 장거리 훈련 거리
+      var longActs2 = fitnessActsForReadiness.filter(function(a){return a.distanceKm >= longThreshDur;});
       var totalLongKm = longActs2.reduce(function(a,b){return a+b.distanceKm;},0);
+
+      // 크로스 활동은 가중치 적용됐으므로 실질 횟수로 환산
+      var pureCount = longActs2.filter(function(a){return !a._isCrossWeighted;}).length;
+      var crossCount2 = longActs2.filter(function(a){return a._isCrossWeighted;}).length;
+      // 크로스 2개 = 순수 1개 수준으로 환산
+      var effectiveCount = pureCount + Math.floor(crossCount2 / 2);
 
       // 내구성 점수: 0~1
       // 0 = 장거리 훈련 없음 (후반 큰 감속 예상)
       // 1 = 충분한 장거리 훈련 (후반 감속 최소)
       var score = 0;
-      if (longActs2.length >= 3) score = 1.0;
-      else if (longActs2.length === 2) score = 0.75;
-      else if (longActs2.length === 1) score = 0.50;
-      else if (fitnessActs.filter(function(a){return a.distanceKm>=raceKm*0.4;}).length >= 2) score = 0.30;
+      if (effectiveCount >= 3) score = 1.0;
+      else if (effectiveCount === 2) score = 0.75;
+      else if (effectiveCount === 1) score = 0.50;
+      else if (fitnessActsForReadiness.filter(function(a){return a.distanceKm>=raceKm*0.4;}).length >= 2) score = 0.30;
       else score = 0.10;
 
       // 후반 페이스 감속 예상 비율 (0% ~ 15%)
@@ -1195,8 +1216,9 @@ export default function App() {
 
       return {
         score: score,
-        longActsCount: longActs2.length,
-        totalLongKm: totalLongKm.toFixed(0),
+        longActsCount: pureCount,
+        crossLongCount: crossCount2,
+        totalLongKm: +totalLongKm.toFixed(0),
         lateDecayPct: lateDecayPct,
         label: score >= 0.75 ? "양호" : score >= 0.50 ? "보통" : "부족",
         color: score >= 0.75 ? "#00e5a0" : score >= 0.50 ? "#ffb830" : "#ff6b35",
@@ -2343,7 +2365,11 @@ export default function App() {
                       <div style={{background:analysis.trainingSummary.durability.color,height:"100%",width:Math.round(analysis.trainingSummary.durability.score*100)+"%"}} />
                     </div>
                     <div style={{fontFamily:"monospace",fontSize:10,color:C.muted,lineHeight:1.8}}>
-                      <div>목표 거리 60% 이상 훈련: {analysis.trainingSummary.durability.longActsCount}회 / {analysis.trainingSummary.durability.totalLongKm}km</div>
+                      <div>동종 장거리: {analysis.trainingSummary.durability.longActsCount}회
+                        {analysis.trainingSummary.durability.crossLongCount>0 &&
+                          <span style={{color:"#4a7aff"}}> + 크로스 {analysis.trainingSummary.durability.crossLongCount}회(85% 환산)</span>}
+                        {" / "}{analysis.trainingSummary.durability.totalLongKm}km
+                      </div>
                       {analysis.trainingSummary.durability.lateDecayPct > 0.02
                         ? <div style={{color:"#ff6b35"}}>⚠ 후반 페이스 저하 예상 ~{Math.round(analysis.trainingSummary.durability.lateDecayPct*100)}% — 롱라이드/롱런 추가 권장</div>
                         : <div style={{color:"#00e5a0"}}>✓ 후반 페이스 유지 가능</div>
