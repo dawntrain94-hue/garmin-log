@@ -12,7 +12,7 @@
 //   GET /api/intervals?action=wellness&oldest=2026-09-01&newest=2026-11-04
 //   GET /api/intervals?action=profile
 
-import { gunzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 
 const BASE = 'https://intervals.icu/api/v1';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -29,6 +29,42 @@ function authHeader() {
 // which Vercel's Standard Protection guards. The client always calls the production
 // API instead, so allow those sibling origins via CORS.
 const ALLOWED_ORIGIN = /^https:\/\/garmin-log(-[a-z0-9-]+)?\.vercel\.app$/;
+
+// Rewrite a GPX down to the fields parseActivityGPX uses: lat/lon, ele, time, hr, power, plus name/type.
+// Namespaced tags (gpxtpx:hr, ns3:power …) are matched by local name.
+export function slimGpx(text) {
+  const tag = (inner, names) => {
+    const re = new RegExp(`<(?:[\\w-]+:)?(?:${names})\\b[^>]*>\\s*([^<\\s][^<]*?)\\s*</(?:[\\w-]+:)?(?:${names})>`, 'i');
+    const m = inner.match(re);
+    return m ? m[1] : null;
+  };
+  const esc = (s) => s.replace(/&(?!amp;|lt;|gt;|quot;|apos;|#)/g, '&amp;').replace(/</g, '&lt;');
+  const head = text.split(/<trkpt\b/i)[0];
+  const name = tag(head, 'name');
+  const type = tag(head, 'type');
+
+  const out = ['<?xml version="1.0" encoding="UTF-8"?>', '<gpx version="1.1" creator="YMC" xmlns="http://www.topografix.com/GPX/1/1">', '<trk>'];
+  if (name) out.push(`<name>${esc(name)}</name>`);
+  if (type) out.push(`<type>${esc(type)}</type>`);
+  out.push('<trkseg>');
+
+  const pt = /<trkpt\b([^>]*?)(?:\/>|>([\s\S]*?)<\/trkpt>)/gi;
+  let m, count = 0;
+  while ((m = pt.exec(text))) {
+    const lat = (m[1].match(/\blat\s*=\s*["']([^"']+)["']/) || [])[1];
+    const lon = (m[1].match(/\blon\s*=\s*["']([^"']+)["']/) || [])[1];
+    if (!lat || !lon) continue;
+    const inner = m[2] || '';
+    const ele = tag(inner, 'ele'), time = tag(inner, 'time');
+    const hr = tag(inner, 'hr|heartrate'), pwr = tag(inner, 'power|watts');
+    out.push(`<trkpt lat="${lat}" lon="${lon}">` +
+      (ele ? `<ele>${ele}</ele>` : '') + (time ? `<time>${time}</time>` : '') +
+      (hr ? `<hr>${hr}</hr>` : '') + (pwr ? `<power>${pwr}</power>` : '') + '</trkpt>');
+    count++;
+  }
+  out.push('</trkseg>', '</trk>', '</gpx>');
+  return count ? out.join('\n') : text; // nothing recognised → leave untouched
+}
 
 const num = (v) => (typeof v === 'number' && isFinite(v) && v > 0 ? v : null);
 
@@ -180,8 +216,14 @@ export default async function handler(req, res) {
 
       let buf = Buffer.from(await r.arrayBuffer());
       if (buf[0] === 0x1f && buf[1] === 0x8b) buf = gunzipSync(buf); // gzipped response
+
+      // Vercel caps a function response at 4.5 MB; a long ride's GPX easily exceeds that.
+      // Keep only what YMC reads, then gzip (≈10x smaller again).
+      const slim = gzipSync(Buffer.from(slimGpx(buf.toString('utf8')), 'utf8'));
       res.setHeader('Content-Type', 'application/gpx+xml; charset=utf-8');
-      return res.status(200).send(buf.toString('utf8'));
+      res.setHeader('Content-Encoding', 'gzip');
+      res.setHeader('X-Original-Bytes', String(buf.length));
+      return res.status(200).send(slim);
     }
 
     return res.status(400).json({ error: 'action must be list, gpx, wellness or profile' });

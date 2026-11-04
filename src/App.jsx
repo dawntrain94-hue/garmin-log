@@ -739,6 +739,9 @@ export default function App() {
   var _sy = useState(null); var syncStatus = _sy[0], setSyncStatus = _sy[1];
   var _wl = useState([]); var wellness = _wl[0], setWellness = _wl[1];
   var _ipf = useState(null); var icuProfile = _ipf[0], setIcuProfile = _ipf[1];
+  var _slg = useState(function(){ try { return JSON.parse(localStorage.getItem("tlog_synclog") || "null"); } catch(e) { return null; } });
+  var syncLog = _slg[0], setSyncLog = _slg[1];
+  var _slo = useState(false); var syncLogOpen = _slo[0], setSyncLogOpen = _slo[1];
 
   // ── storage
   var store = {
@@ -885,11 +888,14 @@ export default function App() {
       var known = {};
       activities.forEach(function(a){ if (a.intervalsId) known[a.intervalsId] = true; });
 
-      var stravaOnly = 0, unsupported = 0;
+      var stravaOnly = 0, unsupported = 0, log = [];
+      var logItem = function(m, result, why) {
+        log.push({ date: String(m.start || "").slice(0, 10), name: m.name || "", type: m.type || "", km: m.distance ? +(m.distance / 1000).toFixed(1) : null, result: result, why: why || "" });
+      };
       var todo = list.filter(function(m) {
         if (known[m.id]) return false;
-        if (m.unavailable) { stravaOnly++; return false; }
-        if (!mapIntervalsType(m.type)) { unsupported++; return false; }
+        if (m.unavailable) { stravaOnly++; logItem(m, "skip", "Strava 경유 — Intervals.icu가 데이터를 안 내줌"); return false; }
+        if (!mapIntervalsType(m.type)) { unsupported++; logItem(m, "skip", "YMC 미지원 종목 (" + (m.type || "?") + ")"); return false; }
         return true;
       });
 
@@ -897,12 +903,13 @@ export default function App() {
       for (var i = 0; i < todo.length; i++) {
         var meta = todo[i];
         setSyncStatus("가져오는 중 " + (i+1) + "/" + todo.length);
-        var stats = null;
-        try { stats = parseActivityGPX(await fetchGpx(meta.id)); } catch(e) { if (e instanceof UnauthorizedError) throw e; }
-        if (!stats || !stats.distanceKm) { failed++; continue; }
+        var stats = null, err = "";
+        try { stats = parseActivityGPX(await fetchGpx(meta.id)); }
+        catch(e) { if (e instanceof UnauthorizedError) throw e; err = e.message || "다운로드 실패"; }
+        if (!stats || !stats.distanceKm) { failed++; logItem(meta, "fail", err || "GPS 경로 없음 (실내 운동 등)"); continue; }
         if (meta.start) stats.activityDate = String(meta.start).slice(0, 10); // 현지 날짜 기준
         if (meta.name) stats.name = meta.name;
-        if (newList.some(function(a){ return !a.intervalsId && looksLikeSameActivity(a, stats); })) { dup++; continue; }
+        if (newList.some(function(a){ return !a.intervalsId && looksLikeSameActivity(a, stats); })) { dup++; logItem(meta, "skip", "이미 수동 업로드한 기록과 같음"); continue; }
         newList.unshift(Object.assign({
           id: "a_" + Date.now() + "_" + Math.random().toString(36).slice(2,5),
           sport: mapIntervalsType(meta.type),
@@ -912,7 +919,11 @@ export default function App() {
           source: "intervals",
         }, stats));
         added++;
+        logItem(meta, "ok", "");
       }
+      var report = { at: new Date().toISOString(), range: oldest + " ~ " + newest, total: list.length, known: list.length - todo.length - stravaOnly - unsupported, items: log };
+      setSyncLog(report);
+      try { localStorage.setItem("tlog_synclog", JSON.stringify(report)); } catch(e) {}
 
       if (added > 0) {
         setActivities(newList); await saveActivities(newList);
@@ -1880,6 +1891,46 @@ export default function App() {
                 기간
               </div>}
             </div>
+
+            {syncLog && !syncStatus && (function(){
+              var items = syncLog.items || [];
+              var bad = items.filter(function(x){ return x.result !== "ok"; });
+              var okN = items.length - bad.length;
+              var col = { ok: C.accent, skip: C.muted, fail: C.red };
+              var mark = { ok: "✓", skip: "–", fail: "✕" };
+              var when = new Date(syncLog.at);
+              return (
+                <div style={{marginBottom:12,border:"1px solid "+C.border,background:C.surface}}>
+                  <div onClick={function(){setSyncLogOpen(!syncLogOpen);}} style={{padding:"8px 12px",cursor:"pointer",fontFamily:"monospace",fontSize:11,color:C.muted,display:"flex",justifyContent:"space-between",gap:8}}>
+                    <span>
+                      마지막 동기화 {(when.getMonth()+1)+"/"+when.getDate()+" "+String(when.getHours()).padStart(2,"0")+":"+String(when.getMinutes()).padStart(2,"0")}
+                      {" · "}<span style={{color:C.accent}}>새로 {okN}</span>
+                      {bad.length > 0 && <span style={{color: bad.some(function(x){return x.result==="fail";}) ? C.red : C.muted}}>{" · 건너뜀 "+bad.length}</span>}
+                    </span>
+                    <span>{syncLogOpen ? "▲" : "▼"}</span>
+                  </div>
+                  {syncLogOpen && (
+                    <div style={{padding:"0 12px 10px",fontFamily:"monospace",fontSize:11}}>
+                      <div style={{color:C.muted,marginBottom:6}}>{syncLog.range} · Intervals.icu {syncLog.total}개 (이미 있음 {syncLog.known})</div>
+                      {!items.length && <div style={{color:C.muted}}>새로 확인한 활동 없음</div>}
+                      {items.slice().sort(function(a,b){ return a.result === b.result ? (b.date||"").localeCompare(a.date||"") : (a.result==="fail"?-1:b.result==="fail"?1:a.result==="skip"?-1:1); }).map(function(x, i){
+                        return (
+                          <div key={i} style={{display:"flex",gap:8,padding:"4px 0",borderTop:"1px solid "+C.border}}>
+                            <span style={{color:col[x.result],width:12}}>{mark[x.result]}</span>
+                            <span style={{color:C.muted,width:44,flexShrink:0}}>{(x.date||"").slice(5)}</span>
+                            <span style={{flex:1,minWidth:0}}>
+                              <span style={{color:C.text}}>{x.name || x.type}</span>
+                              {x.km ? <span style={{color:C.muted}}> {x.km}km</span> : null}
+                              {x.why && <div style={{color:col[x.result]}}>{x.why}</div>}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {!activities.length ? (
               <div>
