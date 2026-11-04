@@ -906,7 +906,7 @@ export default function App() {
       if (stravaOnly) notes.push("Strava 경유 " + stravaOnly + " (Garmin 직접 연결 필요)");
       showToast((added ? added + "개 가져옴 ✓" : "새 활동 없음") + (notes.length ? " · " + notes.join(", ") : ""), failed && !added ? "error" : "ok");
     } catch(e) {
-      if (e instanceof UnauthorizedError) { setSecret(""); showToast("비밀키가 맞지 않아요. 다시 눌러서 입력해 주세요", "error"); }
+      if (e instanceof UnauthorizedError) { setSecret(""); showToast(e.message + " — 다시 눌러서 입력해 주세요", "error"); }
       else showToast("동기화 실패: " + (e.message || "오류"), "error");
     } finally {
       setSyncStatus(null);

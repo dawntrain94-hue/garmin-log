@@ -16,8 +16,18 @@ export class UnauthorizedError extends Error {}
 
 async function call(params) {
   var qs = new URLSearchParams(params).toString();
-  var r = await fetch("/api/intervals?" + qs, { headers: { "x-ymc-secret": getSecret() } });
-  if (r.status === 401) throw new UnauthorizedError("비밀키가 맞지 않아요");
+  // 헤더에는 영문/숫자만 들어갈 수 있어서 인코딩해서 보냄 (한글이 섞여도 안전)
+  var r = await fetch("/api/intervals?" + qs, { headers: { "x-ymc-secret": encodeURIComponent(getSecret()) } });
+  if (r.status === 401) {
+    var info = null;
+    try { info = await r.json(); } catch (e) {}
+    if (!info || info.error !== "unauthorized") {
+      throw new Error("Vercel 배포 보호에 막혔어요. garmin-log.vercel.app 주소로 열었는지 확인해 주세요");
+    }
+    var why = info.caseOnly ? "대소문자만 달라요"
+      : "입력 " + info.sentLength + "자 / 서버 " + info.serverLength + "자";
+    throw new UnauthorizedError("비밀키가 맞지 않아요 (" + why + ")");
+  }
   if (!r.ok) {
     var detail = "";
     try { detail = (await r.json()).error || ""; } catch (e) {}
