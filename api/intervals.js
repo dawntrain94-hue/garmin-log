@@ -23,11 +23,15 @@ function authHeader() {
 
 export default async function handler(req, res) {
   // The app is public, so block anyone who doesn't know the secret.
-  if (!process.env.YMC_SECRET || req.headers['x-ymc-secret'] !== process.env.YMC_SECRET) {
-    return res.status(401).json({ error: 'unauthorized' });
+  const serverSecret = (process.env.YMC_SECRET || '').trim();
+  if (!serverSecret) {
+    return res.status(500).json({ error: '서버에 YMC_SECRET이 없어요 (환경변수 추가 후 Redeploy 필요)' });
   }
   if (!process.env.INTERVALS_API_KEY) {
-    return res.status(500).json({ error: 'INTERVALS_API_KEY is not set' });
+    return res.status(500).json({ error: '서버에 INTERVALS_API_KEY가 없어요 (환경변수 추가 후 Redeploy 필요)' });
+  }
+  if ((req.headers['x-ymc-secret'] || '').trim() !== serverSecret) {
+    return res.status(401).json({ error: 'unauthorized' });
   }
 
   const { action, oldest, newest, id } = req.query;

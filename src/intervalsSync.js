@@ -18,7 +18,11 @@ async function call(params) {
   var qs = new URLSearchParams(params).toString();
   var r = await fetch("/api/intervals?" + qs, { headers: { "x-ymc-secret": getSecret() } });
   if (r.status === 401) throw new UnauthorizedError("비밀키가 맞지 않아요");
-  if (!r.ok) throw new Error("Intervals.icu 요청 실패 (" + r.status + ")");
+  if (!r.ok) {
+    var detail = "";
+    try { detail = (await r.json()).error || ""; } catch (e) {}
+    throw new Error(detail ? detail : "요청 실패 (" + r.status + ")");
+  }
   return params.action === "gpx" ? r.text() : r.json();
 }
 
