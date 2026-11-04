@@ -845,18 +845,29 @@ export default function App() {
       && Math.abs((a.distanceKm || 0) - (stats.distanceKm || 0)) < 0.3
       && Math.abs((a.durationMin || 0) - (stats.durationMin || 0)) <= 3;
   }
-  async function syncIntervals() {
+  function syncIntervalsRange() {
     if (syncStatus) return;
+    var v = window.prompt("며칠 전 기록부터 가져올까요? (숫자, 예: 365)\n이미 있는 기록은 중복으로 건너뛰어요", "365");
+    if (v == null) return;
+    var days = parseInt(String(v).replace(/[^0-9]/g, ""), 10);
+    if (!days || days < 1) { showToast("숫자로 입력해 주세요", "error"); return; }
+    syncIntervals(Math.min(days, 3650));
+  }
+
+  async function syncIntervals(daysBack) {
+    if (syncStatus) return;
+    if (typeof daysBack !== "number") daysBack = null; // onClick 이벤트가 들어온 경우
     if (!getSecret()) {
       var s = window.prompt("Vercel에 넣은 YMC_SECRET 값을 입력하세요 (이 기기에 한 번만 저장돼요)");
       if (!s) return;
       setSecret(s.trim());
     }
 
-    // 마지막 기록 하루 전부터, 기록이 없으면 최근 60일
+    // 기간 지정 시 그만큼, 아니면 마지막 기록 하루 전부터 (기록이 없으면 최근 60일)
     var dates = activities.map(function(a){return a.activityDate;}).filter(Boolean).sort();
     var from = new Date();
-    if (dates.length) { from = new Date(dates[dates.length-1] + "T00:00:00"); from.setDate(from.getDate() - 1); }
+    if (daysBack) from.setDate(from.getDate() - daysBack);
+    else if (dates.length) { from = new Date(dates[dates.length-1] + "T00:00:00"); from.setDate(from.getDate() - 1); }
     else from.setDate(from.getDate() - 60);
     var oldest = isoDate(from), newest = isoDate(new Date());
 
@@ -903,7 +914,8 @@ export default function App() {
       if (unsupported) notes.push("기타 종목 " + unsupported);
       if (failed) notes.push("GPS 없음/실패 " + failed);
       if (stravaOnly) notes.push("Strava 경유 " + stravaOnly + " (Garmin 직접 연결 필요)");
-      showToast((added ? added + "개 가져옴 ✓" : "새 활동 없음") + (notes.length ? " · " + notes.join(", ") : ""), failed && !added ? "error" : "ok");
+      var range = oldest.slice(5).replace("-", "/") + "~" + newest.slice(5).replace("-", "/") + " Intervals.icu " + list.length + "개";
+      showToast((added ? added + "개 가져옴 ✓" : "새 활동 없음") + " (" + range + ")" + (notes.length ? " · " + notes.join(", ") : ""), failed && !added ? "error" : "ok");
     } catch(e) {
       if (e instanceof UnauthorizedError) { setSecret(""); showToast(e.message + " — 다시 눌러서 입력해 주세요", "error"); }
       else showToast("동기화 실패: " + (e.message || "오류"), "error");
@@ -1775,6 +1787,10 @@ export default function App() {
                 style={{border:"1px solid "+C.blue,padding:"6px 14px",cursor:syncStatus?"default":"pointer",fontFamily:"monospace",fontSize:11,color:C.blue,fontWeight:700,opacity:syncStatus?0.6:1,transition:"all .15s",flexShrink:0}}>
                 {syncStatus || "⟳ SYNC"}
               </div>
+              {!syncStatus && <div onClick={syncIntervalsRange} title="기간을 정해서 예전 기록까지 가져오기"
+                style={{border:"1px solid "+C.border,padding:"6px 10px",cursor:"pointer",fontFamily:"monospace",fontSize:11,color:C.muted,flexShrink:0}}>
+                기간
+              </div>}
             </div>
 
             {!activities.length ? (
