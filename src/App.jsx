@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { getSecret, setSecret, listActivities, fetchGpx, mapIntervalsType, UnauthorizedError, fetchWellness, fetchIntervalsProfile } from "./intervalsSync";
 import { mergeWellness, computeWellnessStatus } from "./wellness";
 import { buildPowerBins, sustainedMinutes } from "./intensity";
+import { dedupeActivities } from "./dedupe";
 
 // ── 유틸 ──────────────────────────────────────────────────────────────────────
 function haversine(lat1, lon1, lat2, lon2) {
@@ -887,7 +888,12 @@ export default function App() {
 
     setSyncStatus("목록 확인 중…");
     try {
-      var list = await listActivities(oldest, newest);
+      var rawList = await listActivities(oldest, newest);
+      // 같은 운동을 Edge + 워치로 동시에 기록한 경우 파워 있는 기록만 사용
+      var dd = dedupeActivities(rawList, function(m){ return { id: m.id, start: m.start, type: m.type, durationSec: m.elapsedTime || m.movingTime, hasPower: m.avgPower > 0 }; });
+      var list = dd.keep;
+      var droppedIds = {};
+      dd.dropped.forEach(function(d){ droppedIds[d.item.id] = true; });
       var known = {};
       activities.forEach(function(a){ if (a.intervalsId) known[a.intervalsId] = a; });
       // 예전에 가져온 라이딩 중 파워 상세(powerBins)가 없는 것은 한 번 다시 읽어서 보완
@@ -898,6 +904,7 @@ export default function App() {
       var logItem = function(m, result, why) {
         log.push({ date: String(m.start || "").slice(0, 10), name: m.name || "", type: m.type || "", km: m.distance ? +(m.distance / 1000).toFixed(1) : null, result: result, why: why || "" });
       };
+      dd.dropped.forEach(function(d){ logItem(d.item, "skip", "같은 운동을 다른 기기로 동시 기록 — " + (d.item.device || "") + " 기록은 빼고 파워 있는 기록만 사용"); });
       var todo = list.filter(function(m) {
         if (known[m.id]) { if (needsPower(known[m.id])) { m.refresh = true; return true; } return false; }
         if (m.unavailable) { stravaOnly++; logItem(m, "skip", "Strava 경유 — Intervals.icu가 데이터를 안 내줌"); return false; }
@@ -905,7 +912,10 @@ export default function App() {
         return true;
       });
 
-      var newList = activities.slice(), added = 0, dup = 0, failed = 0;
+      // 예전에 두 번 들어간 기록 정리
+      var newList = activities.filter(function(a){ return !(a.intervalsId && droppedIds[a.intervalsId]); });
+      var cleaned = activities.length - newList.length;
+      var added = 0, dup = 0, failed = 0;
       for (var i = 0; i < todo.length; i++) {
         var meta = todo[i];
         setSyncStatus("가져오는 중 " + (i+1) + "/" + todo.length);
@@ -936,11 +946,11 @@ export default function App() {
         added++;
         logItem(meta, "ok", "");
       }
-      var report = { at: new Date().toISOString(), range: oldest + " ~ " + newest, total: list.length, known: list.filter(function(m){ return known[m.id]; }).length, items: log };
+      var report = { at: new Date().toISOString(), range: oldest + " ~ " + newest, total: rawList.length, known: list.filter(function(m){ return known[m.id]; }).length, items: log };
       setSyncLog(report);
       try { localStorage.setItem("tlog_synclog", JSON.stringify(report)); } catch(e) {}
 
-      if (added > 0 || refresh > 0) {
+      if (added > 0 || refresh > 0 || cleaned > 0) {
         setActivities(newList); await saveActivities(newList);
       }
 
@@ -956,6 +966,8 @@ export default function App() {
       } catch(we) { if (we instanceof UnauthorizedError) throw we; }
 
       var notes = [];
+      if (cleaned) notes.push("중복 기록 정리 " + cleaned);
+      if (dd.dropped.length && !cleaned) notes.push("기기 중복 " + dd.dropped.length + "건 제외");
       if (refresh) notes.push("파워 상세 보완 " + refresh);
       if (wellDays) notes.push("회복 데이터 " + wellDays + "일");
       if (dup) notes.push("중복 " + dup);

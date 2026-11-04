@@ -13,6 +13,7 @@ import {
 } from './_icu.js';
 import { buildPowerBins, sustainedMinutes } from '../src/intensity.js';
 import { computeWellnessStatus } from '../src/wellness.js';
+import { dedupeActivities } from '../src/dedupe.js';
 
 const SERVER_INFO = { name: 'ymc-training', title: 'YMC 훈련 기록', version: '1.0.0' };
 const SUPPORTED_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
@@ -21,6 +22,7 @@ const INSTRUCTIONS = [
   'Dates are the athlete\'s local dates (Asia/Seoul). Distances km, durations minutes, power W, HR bpm, pace min/km.',
   'Training load / fitness / fatigue / form are Intervals.icu\'s own model, not YMC\'s TRIMP model; say so when quoting them.',
   'Thresholds come from the athlete\'s Intervals.icu settings, which are entered manually and can be out of date.',
+  'When the same workout was recorded on two devices at once (bike computer + watch), only the recording with power is returned; duplicateRecordingsHidden lists the hidden ones. Intervals.icu\'s own fitness/fatigue numbers may still include both copies.',
   'Start with get_training_overview for general questions; drill down with the other tools.',
 ].join(' ');
 
@@ -78,9 +80,16 @@ function toActivity(a) {
   };
 }
 
+// Same ride recorded on two devices (Edge + watch) → keep the one with power (same rule as the app)
 async function fetchActivities(oldest, newest) {
   const data = await icuJson(`${athletePath()}/activities?oldest=${oldest}&newest=${newest}`);
-  return (Array.isArray(data) ? data : []).map(toActivity);
+  const dd = dedupeActivities(Array.isArray(data) ? data : [], (a) => ({
+    id: a.id, start: a.start_date_local, type: a.type,
+    durationSec: a.elapsed_time || a.moving_time, hasPower: a.icu_average_watts > 0,
+  }));
+  const rows = dd.keep.map(toActivity);
+  rows.duplicatesHidden = dd.dropped.map((d) => ({ id: d.item.id, date: String(d.item.start_date_local || '').slice(0, 10), device: d.item.device_name || null, keptId: d.keptId }));
+  return rows;
 }
 
 async function fetchSettings() {
@@ -142,6 +151,7 @@ const TOOLS = [
         recovery: status && summarizeStatus(status),
         thresholds: settings,
         activitiesWithoutData: acts.length - usable.length || undefined,
+        duplicateRecordingsHidden: acts.duplicatesHidden.length || undefined,
         longest: {
           ride: usable.filter((a) => RIDE_TYPES.has(a.type)).sort((a, b) => (b.km || 0) - (a.km || 0)).slice(0, 3).map(brief),
           run: usable.filter((a) => RUN_TYPES.has(a.type)).sort((a, b) => (b.km || 0) - (a.km || 0)).slice(0, 3).map(brief),
@@ -167,10 +177,11 @@ const TOOLS = [
     async run(args) {
       const { oldest, newest } = range(args, 28, 366);
       let acts = await fetchActivities(oldest, newest);
+      const hidden = acts.duplicatesHidden;
       if (args.sport === 'ride') acts = acts.filter((a) => RIDE_TYPES.has(a.type));
       if (args.sport === 'run') acts = acts.filter((a) => RUN_TYPES.has(a.type));
       acts.sort((a, b) => String(b.start).localeCompare(String(a.start)));
-      return { period: { oldest, newest }, count: acts.length, activities: acts };
+      return { period: { oldest, newest }, count: acts.length, activities: acts, duplicateRecordingsHidden: hidden.length ? hidden : undefined };
     },
   },
   {
