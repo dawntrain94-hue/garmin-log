@@ -19,3 +19,22 @@
 2. 하단 공유 버튼(□↑) 탭
 3. "홈 화면에 추가" 탭
 4. 완료 — 앱 아이콘으로 실행 가능
+
+## Intervals.icu 연동
+
+Garmin → Intervals.icu → YMC. Vercel 환경변수(Production):
+
+| 이름 | 값 |
+|---|---|
+| `INTERVALS_API_KEY` | intervals.icu → Settings → Developer Settings → API Key |
+| `INTERVALS_ATHLETE_ID` | `0` (API 키 주인) 또는 `i123456` |
+| `YMC_SECRET` | 직접 정한 비밀키 (앱 SYNC와 Claude 커넥터에서 사용) |
+
+## Claude 커넥터 (MCP)
+
+claude.ai → Customize → Connectors → Add custom connector
+
+- URL: `https://garmin-log.vercel.app/api/mcp`
+- 인증: 요청 헤더 `Authorization: Bearer <YMC_SECRET>`
+
+읽기 전용 도구: `get_training_overview`, `list_activities`, `get_cycling_intensity`, `get_recovery`, `get_thresholds`, `get_activity`
