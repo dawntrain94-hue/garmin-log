@@ -683,7 +683,6 @@ function analyzeRaceResult(text, courseDistKm) {
     earlyDistKm: +earlyDistKm.toFixed(1),
     midEndKm: +midEndKm.toFixed(1),
     lateStartKm: +lateStartKm.toFixed(1),
-    avgPwrFirst: Math.round(avgPwrFirst), avgPwrLast: Math.round(avgPwrLast),
     hasPower: validPwrs.length > 100,
     hasHR: validHrs.length > 100,
   };
@@ -1765,11 +1764,11 @@ export default function App() {
                   </button>
                 );
               })}
-              <div style={{marginLeft:"auto"}} onClick={function(){actRef.current.click();}}
+              <div onClick={function(){actRef.current.click();}}
                 onDragOver={function(e){e.preventDefault();setActDrag(true);}}
                 onDragLeave={function(){setActDrag(false);}}
                 onDrop={function(e){e.preventDefault();setActDrag(false);handleActivityFiles(e.dataTransfer.files);}}
-                style={{border:"1px solid "+C.accent,padding:"6px 14px",cursor:"pointer",fontFamily:"monospace",fontSize:11,color:C.accent,fontWeight:700,background:actDrag?"rgba(0,229,160,0.08)":"transparent",transition:"all .15s",flexShrink:0}}>
+                style={{marginLeft:"auto",border:"1px solid "+C.accent,padding:"6px 14px",cursor:"pointer",fontFamily:"monospace",fontSize:11,color:C.accent,fontWeight:700,background:actDrag?"rgba(0,229,160,0.08)":"transparent",transition:"all .15s",flexShrink:0}}>
                 + GPX
               </div>
               <div onClick={syncIntervals} title="Intervals.icu에서 새 활동 가져오기"
