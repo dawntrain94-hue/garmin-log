@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { getSecret, setSecret, listActivities, fetchGpx, mapIntervalsType, UnauthorizedError, fetchWellness, fetchIntervalsProfile } from "./intervalsSync";
 import { mergeWellness, computeWellnessStatus } from "./wellness";
+import { buildPowerBins, sustainedMinutes } from "./intensity";
 
 // ── 유틸 ──────────────────────────────────────────────────────────────────────
 function haversine(lat1, lon1, lat2, lon2) {
@@ -34,7 +35,7 @@ function parseActivityGPX(text) {
   var doc = parser.parseFromString(text, "text/xml");
   var points = Array.from(doc.querySelectorAll("trkpt"));
   if (!points.length) return null;
-  var totalDist = 0, hrs = [], powers = [], rawEles = [];
+  var totalDist = 0, hrs = [], powers = [], rawEles = [], pSeries = [];
   var prevLat, prevLon, prevTime;
   var windowDist = 0, windowTime = 0, paces = [];
   points.forEach(function(pt, i) {
@@ -47,6 +48,7 @@ function parseActivityGPX(text) {
     rawEles.push(ele);
     if (hrEl) { var h = parseInt(hrEl.textContent); if (h > 40 && h < 220) hrs.push(h); }
     if (pwrEl) { var pw = parseInt(pwrEl.textContent); if (pw > 0 && pw < 2000) powers.push(pw); }
+    if (pwrEl && timeStr) { var pv = parseInt(pwrEl.textContent); var ts = Date.parse(timeStr) / 1000; if (pv >= 0 && pv < 2000 && ts) pSeries.push([ts, pv]); }
     if (i > 0 && prevLat != null) {
       var d = haversine(prevLat, prevLon, lat, lon);
       totalDist += d;
@@ -98,6 +100,7 @@ function parseActivityGPX(text) {
     maxHR: hrs.length ? Math.max.apply(null,hrs) : null,
     avgPower: powers.length ? Math.round(powers.reduce(function(a,b){return a+b;},0)/powers.length) : null,
     points: points.length, elevProfile: elevProfile,
+    powerBins: buildPowerBins(pSeries), // 30초 평균 파워 (지속 고강도 시간 계산용)
   };
 }
 
@@ -886,14 +889,17 @@ export default function App() {
     try {
       var list = await listActivities(oldest, newest);
       var known = {};
-      activities.forEach(function(a){ if (a.intervalsId) known[a.intervalsId] = true; });
+      activities.forEach(function(a){ if (a.intervalsId) known[a.intervalsId] = a; });
+      // 예전에 가져온 라이딩 중 파워 상세(powerBins)가 없는 것은 한 번 다시 읽어서 보완
+      var needsPower = function(a){ return a && (a.sport==="cycling"||a.sport==="mtb") && a.avgPower > 0 && !a.powerBins && !a.powerChecked; };
+      var refresh = 0;
 
       var stravaOnly = 0, unsupported = 0, log = [];
       var logItem = function(m, result, why) {
         log.push({ date: String(m.start || "").slice(0, 10), name: m.name || "", type: m.type || "", km: m.distance ? +(m.distance / 1000).toFixed(1) : null, result: result, why: why || "" });
       };
       var todo = list.filter(function(m) {
-        if (known[m.id]) return false;
+        if (known[m.id]) { if (needsPower(known[m.id])) { m.refresh = true; return true; } return false; }
         if (m.unavailable) { stravaOnly++; logItem(m, "skip", "Strava 경유 — Intervals.icu가 데이터를 안 내줌"); return false; }
         if (!mapIntervalsType(m.type)) { unsupported++; logItem(m, "skip", "YMC 미지원 종목 (" + (m.type || "?") + ")"); return false; }
         return true;
@@ -909,7 +915,16 @@ export default function App() {
         if (!stats || !stats.distanceKm) { failed++; logItem(meta, "fail", err || "GPS 경로 없음 (실내 운동 등)"); continue; }
         if (meta.start) stats.activityDate = String(meta.start).slice(0, 10); // 현지 날짜 기준
         if (meta.name) stats.name = meta.name;
-        if (newList.some(function(a){ return !a.intervalsId && looksLikeSameActivity(a, stats); })) { dup++; logItem(meta, "skip", "이미 수동 업로드한 기록과 같음"); continue; }
+        if (meta.refresh) {
+          newList = newList.map(function(a){ return a.intervalsId === meta.id ? Object.assign({}, a, { powerBins: stats.powerBins || null, powerChecked: true }) : a; });
+          refresh++; continue;
+        }
+        var twin = newList.find(function(a){ return !a.intervalsId && looksLikeSameActivity(a, stats); });
+        if (twin) {
+          // 수동 업로드 기록과 연결 → 다음부터 다시 받지 않고, 파워 상세도 채움
+          newList = newList.map(function(a){ return a === twin ? Object.assign({}, a, { intervalsId: meta.id, powerBins: a.powerBins || stats.powerBins || null, powerChecked: true }) : a; });
+          dup++; refresh++; logItem(meta, "skip", "이미 있는 기록과 같음 — 연결하고 파워 상세만 보완"); continue;
+        }
         newList.unshift(Object.assign({
           id: "a_" + Date.now() + "_" + Math.random().toString(36).slice(2,5),
           sport: mapIntervalsType(meta.type),
@@ -921,11 +936,11 @@ export default function App() {
         added++;
         logItem(meta, "ok", "");
       }
-      var report = { at: new Date().toISOString(), range: oldest + " ~ " + newest, total: list.length, known: list.length - todo.length - stravaOnly - unsupported, items: log };
+      var report = { at: new Date().toISOString(), range: oldest + " ~ " + newest, total: list.length, known: list.filter(function(m){ return known[m.id]; }).length, items: log };
       setSyncLog(report);
       try { localStorage.setItem("tlog_synclog", JSON.stringify(report)); } catch(e) {}
 
-      if (added > 0) {
+      if (added > 0 || refresh > 0) {
         setActivities(newList); await saveActivities(newList);
       }
 
@@ -941,6 +956,7 @@ export default function App() {
       } catch(we) { if (we instanceof UnauthorizedError) throw we; }
 
       var notes = [];
+      if (refresh) notes.push("파워 상세 보완 " + refresh);
       if (wellDays) notes.push("회복 데이터 " + wellDays + "일");
       if (dup) notes.push("중복 " + dup);
       if (unsupported) notes.push("기타 종목 " + unsupported);
@@ -1346,10 +1362,25 @@ export default function App() {
           else                    {              warnings.push("훈련 페이스와 목표 차이 큼 — 인터벌/템포런 추가 권장"); }
         } else { score += 15; details.push("LT 또는 VDOT 입력 시 페이스 평가 가능"); }
       } else {
-        // 사이클: IF 비교
+        // 사이클: 지속 고강도 시간 (FTP 85% 이상이 2분 이상 이어진 구간) → 없으면 평균 IF
         if (profile.ftp && parseFloat(profile.ftp)>0) {
+          var ftpR = parseFloat(profile.ftp);
           var pwrActsR = fitnessActs.filter(function(a){return a.avgPower&&a.avgPower>0;});
-          if (pwrActsR.length >= 2) {
+          var binActsR = fitnessActs.filter(function(a){return a.powerBins && a.powerBins.length;});
+          if (binActsR.length >= 2) {
+            var weeksR = fitnessActs === ctl42 ? 6 : fitnessActs === ctl70 ? 10 : Math.max(1, (function(){
+              var ts = fitnessActs.map(function(a){return new Date(a.activityDate||a.uploadedAt).getTime();});
+              return (now - Math.min.apply(null, ts)) / DAY / 7;
+            })());
+            var ssTotal = binActsR.reduce(function(sum, a){ return sum + sustainedMinutes(a.powerBins, ftpR, 0.85, 2); }, 0);
+            var ssWeek = Math.round(ssTotal / weeksR);
+            var ssRides = binActsR.filter(function(a){ return sustainedMinutes(a.powerBins, ftpR, 0.85, 2) >= 10; }).length;
+            var ssLabel = "FTP 85%↑ 2분 이상 지속 — 주당 " + ssWeek + "분 (최근 " + Math.round(weeksR) + "주, 10분↑ 라이딩 " + ssRides + "회)";
+            if (ssWeek >= 40)      { score += 25; goods.push("훈련 강도 적절 — " + ssLabel); }
+            else if (ssWeek >= 20) { score += 15; details.push("훈련 강도 보통 — " + ssLabel + ", 주당 40분 이상이면 충분"); }
+            else                   { score += 5;  warnings.push("고강도 부족 — " + ssLabel + ". 오르막에서 8~15분 × 2~3회 또는 5분 블록 여러 번으로 누적해도 돼요"); }
+            if (binActsR.length < pwrActsR.length) details.push("파워 상세 있는 라이딩 " + binActsR.length + "/" + pwrActsR.length + "개 기준 — 나머지는 기간 SYNC 시 자동 보완");
+          } else if (pwrActsR.length >= 2) {
             var avgPwrR = pwrActsR.reduce(function(a,b){return a+b.avgPower;},0)/pwrActsR.length;
             var ifR = avgPwrR/parseFloat(profile.ftp);
             if (ifR >= 0.65)      { score += 25; goods.push("훈련 강도 적절 — 평균 IF "+ifR.toFixed(2)); }
