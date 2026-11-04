@@ -60,3 +60,11 @@ export function mapIntervalsType(type) {
     default: return null;
   }
 }
+
+export function fetchWellness(oldest, newest) {
+  return call({ action: "wellness", oldest: oldest, newest: newest });
+}
+
+export function fetchIntervalsProfile() {
+  return call({ action: "profile" });
+}

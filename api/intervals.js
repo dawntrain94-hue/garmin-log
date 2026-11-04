@@ -9,6 +9,8 @@
 // Endpoints:
 //   GET /api/intervals?action=list&oldest=2026-10-01&newest=2026-11-04
 //   GET /api/intervals?action=gpx&id=i123456789
+//   GET /api/intervals?action=wellness&oldest=2026-09-01&newest=2026-11-04
+//   GET /api/intervals?action=profile
 
 import { gunzipSync } from 'node:zlib';
 
@@ -27,6 +29,24 @@ function authHeader() {
 // which Vercel's Standard Protection guards. The client always calls the production
 // API instead, so allow those sibling origins via CORS.
 const ALLOWED_ORIGIN = /^https:\/\/garmin-log(-[a-z0-9-]+)?\.vercel\.app$/;
+
+const num = (v) => (typeof v === 'number' && isFinite(v) && v > 0 ? v : null);
+
+// Intervals.icu wellness row → the few fields YMC uses (id is the date, YYYY-MM-DD)
+function toWellness(w) {
+  if (!w || !DATE_RE.test(w.id || '')) return null;
+  const row = {
+    date: w.id,
+    hrv: num(w.hrv),                 // rMSSD, ms
+    restingHR: num(w.restingHR),
+    vo2max: num(w.vo2max),
+    weight: num(w.weight),           // kg
+    sleepHours: num(w.sleepSecs) ? +(w.sleepSecs / 3600).toFixed(2) : null,
+    sleepScore: num(w.sleepScore),
+  };
+  const hasAny = Object.keys(row).some((k) => k !== 'date' && row[k] != null);
+  return hasAny ? row : null;
+}
 
 // Never pass Intervals.icu's own 401/403 through: the app would mistake it for our secret check
 async function upstreamError(res, r) {
@@ -114,6 +134,43 @@ export default async function handler(req, res) {
       return res.status(200).json(activities);
     }
 
+    if (action === 'wellness') {
+      const end = newest || oldest;
+      if (!DATE_RE.test(oldest || '') || !DATE_RE.test(end || '')) {
+        return res.status(400).json({ error: 'oldest/newest must be YYYY-MM-DD' });
+      }
+      const r = await fetch(`${BASE}/athlete/${athlete}/wellness?oldest=${oldest}&newest=${end}`, {
+        headers: { Authorization: authHeader() },
+      });
+      if (!r.ok) return upstreamError(res, r);
+      const data = await r.json();
+      return res.status(200).json((Array.isArray(data) ? data : []).map(toWellness).filter(Boolean));
+    }
+
+    if (action === 'profile') {
+      const r = await fetch(`${BASE}/athlete/${athlete}/sport-settings`, {
+        headers: { Authorization: authHeader() },
+      });
+      if (!r.ok) return upstreamError(res, r);
+      const settings = await r.json();
+      const pick = (type) => (Array.isArray(settings) ? settings : [])
+        .find((s) => Array.isArray(s.types) && s.types.includes(type)) || null;
+      const run = pick('Run'), ride = pick('Ride');
+      return res.status(200).json({
+        run: run && {
+          lthr: num(run.lthr),
+          maxHr: num(run.max_hr),
+          // threshold_pace is stored as speed in m/s → min/km
+          thresholdPaceMinKm: num(run.threshold_pace) ? +(1000 / run.threshold_pace / 60).toFixed(3) : null,
+        },
+        ride: ride && {
+          ftp: num(ride.ftp),
+          lthr: num(ride.lthr),
+          maxHr: num(ride.max_hr),
+        },
+      });
+    }
+
     if (action === 'gpx') {
       if (!ID_RE.test(id || '')) return res.status(400).json({ error: 'invalid id' });
       const r = await fetch(`${BASE}/activity/${id}/gpx-file`, {
@@ -127,7 +184,7 @@ export default async function handler(req, res) {
       return res.status(200).send(buf.toString('utf8'));
     }
 
-    return res.status(400).json({ error: 'action must be list or gpx' });
+    return res.status(400).json({ error: 'action must be list, gpx, wellness or profile' });
   } catch (e) {
     return res.status(502).json({ error: String(e?.message || e) });
   }

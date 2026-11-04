@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
-import { getSecret, setSecret, listActivities, fetchGpx, mapIntervalsType, UnauthorizedError } from "./intervalsSync";
+import { getSecret, setSecret, listActivities, fetchGpx, mapIntervalsType, UnauthorizedError, fetchWellness, fetchIntervalsProfile } from "./intervalsSync";
+import { mergeWellness, computeWellnessStatus } from "./wellness";
 
 // ── 유틸 ──────────────────────────────────────────────────────────────────────
 function haversine(lat1, lon1, lat2, lon2) {
@@ -736,6 +737,8 @@ export default function App() {
   var _rd = useState(false); var raceResultDrag = _rd[0], setRaceResultDrag = _rd[1];
   var raceResultRef = useRef();
   var _sy = useState(null); var syncStatus = _sy[0], setSyncStatus = _sy[1];
+  var _wl = useState([]); var wellness = _wl[0], setWellness = _wl[1];
+  var _ipf = useState(null); var icuProfile = _ipf[0], setIcuProfile = _ipf[1];
 
   // ── storage
   var store = {
@@ -760,6 +763,8 @@ export default function App() {
         if (av) { var pa = JSON.parse(av); if (Array.isArray(pa)) setActivities(pa); }
         var pv = await store.get("tlog_profile");
         if (pv) { var pp = JSON.parse(pv); if (pp && typeof pp === "object") setProfile(pp); }
+        var wv = await store.get("tlog_wellness");
+        if (wv) { var pw = JSON.parse(wv); if (Array.isArray(pw)) setWellness(pw); }
       } catch(e) {}
       setStorageReady(true);
     })();
@@ -769,6 +774,9 @@ export default function App() {
   async function saveActivities(list) {
     try { await store.set("tlog_activities", JSON.stringify(list)); }
     catch(e) { showToast("⚠ 저장 실패 — 백업 탭에서 JSON 내보내기로 보관하세요","error"); }
+  }
+  async function saveWellness(list) {
+    try { await store.set("tlog_wellness", JSON.stringify(list)); } catch(e) { /* 회복 데이터는 다음 SYNC에서 다시 받으면 됨 */ }
   }
   async function saveProfile(p) {
     try { await store.set("tlog_profile", JSON.stringify(p)); setProfileSaved(true); setTimeout(function(){setProfileSaved(false);},2500); }
@@ -909,7 +917,20 @@ export default function App() {
       if (added > 0) {
         setActivities(newList); await saveActivities(newList);
       }
+
+      // 회복 데이터: HRV 기준선 계산에 60일이 필요해서 최소 60일, 기간 지정 시 최대 400일
+      var wellDays = 0;
+      try {
+        setSyncStatus("회복 데이터…");
+        var wFrom = new Date(); wFrom.setDate(wFrom.getDate() - Math.min(400, Math.max(60, daysBack || 0)));
+        var wRows = await fetchWellness(isoDate(wFrom), newest);
+        var mergedW = mergeWellness(wellness, wRows, newest);
+        setWellness(mergedW); await saveWellness(mergedW);
+        wellDays = wRows.length;
+      } catch(we) { if (we instanceof UnauthorizedError) throw we; }
+
       var notes = [];
+      if (wellDays) notes.push("회복 데이터 " + wellDays + "일");
       if (dup) notes.push("중복 " + dup);
       if (unsupported) notes.push("기타 종목 " + unsupported);
       if (failed) notes.push("GPS 없음/실패 " + failed);
@@ -922,6 +943,62 @@ export default function App() {
     } finally {
       setSyncStatus(null);
     }
+  }
+
+  // ── Intervals.icu 프로필 불러오기 (확인 후에만 적용)
+  async function loadIntervalsProfile() {
+    if (syncStatus) return;
+    if (!getSecret()) {
+      var s = window.prompt("Vercel에 넣은 YMC_SECRET 값을 입력하세요 (이 기기에 한 번만 저장돼요)");
+      if (!s) return;
+      setSecret(s.trim());
+    }
+    setSyncStatus("프로필 불러오는 중…");
+    try {
+      var icu = await fetchIntervalsProfile();
+      var wl = wellness;
+      if (!wl.length) {
+        var from = new Date(); from.setDate(from.getDate() - 60);
+        var today = isoDate(new Date());
+        wl = mergeWellness(wellness, await fetchWellness(isoDate(from), today), today);
+        setWellness(wl); await saveWellness(wl);
+      }
+      var ws = computeWellnessStatus(wl, isoDate(new Date()));
+      var run = icu.run || {}, ride = icu.ride || {};
+      var cand = [
+        { key:"ltPaceMinKm", label:"LT 페이스", next: run.thresholdPaceMinKm, show: function(v){ return v ? formatPace(parseFloat(v))+"/km" : "—"; }, src:"Intervals.icu 러닝 설정" },
+        { key:"ltHR", label:"LTHR", next: run.lthr || ride.lthr, show: function(v){ return v ? v+"bpm" : "—"; }, src:"Intervals.icu 설정" },
+        { key:"maxHR", label:"최대 심박", next: run.maxHr || ride.maxHr, show: function(v){ return v ? v+"bpm" : "—"; }, src:"Intervals.icu 설정" },
+        { key:"ftp", label:"FTP", next: ride.ftp, show: function(v){ return v ? v+"W" : "—"; }, src:"Intervals.icu 사이클 설정" },
+        { key:"vo2maxRun", label:"VO2max (러닝)", next: ws && ws.latest.vo2max ? ws.latest.vo2max.value : null, show: function(v){ return v ? String(v) : "—"; }, src: ws && ws.latest.vo2max ? "Garmin · "+ws.latest.vo2max.date : "" },
+        { key:"weight", label:"체중", next: ws && ws.latest.weight ? ws.latest.weight.value : null, show: function(v){ return v ? v+"kg" : "—"; }, src: ws && ws.latest.weight ? ws.latest.weight.date : "" },
+      ];
+      var rows = cand.filter(function(c){
+        if (c.next == null) return false;
+        var cur = parseFloat(profile[c.key]);
+        return !(cur > 0) || Math.abs(cur - c.next) > (c.key === "ltPaceMinKm" ? 0.005 : 0.05);
+      }).map(function(c){
+        var nextStr = c.key === "ltPaceMinKm" ? String(+c.next.toFixed(3)) : String(Math.round(c.next * 10) / 10);
+        return { key:c.key, label:c.label, cur: c.show(profile[c.key]), nxt: c.show(nextStr), value: nextStr, src: c.src, on: true };
+      });
+      if (!rows.length) showToast("Intervals.icu 값과 지금 프로필이 같아요 ✓");
+      setIcuProfile(rows.length ? rows : null);
+    } catch(e) {
+      if (e instanceof UnauthorizedError) { setSecret(""); showToast(e.message + " — 다시 눌러서 입력해 주세요", "error"); }
+      else showToast("불러오기 실패: " + (e.message || "오류"), "error");
+    } finally { setSyncStatus(null); }
+  }
+  async function applyIntervalsProfile() {
+    var patch = {};
+    (icuProfile || []).forEach(function(r){ if (r.on) patch[r.key] = r.value; });
+    var next = Object.assign({}, profile, patch);
+    if (patch.ftp || patch.weight) {
+      var f = parseFloat(next.ftp), w = parseFloat(next.weight);
+      if (f > 0 && w > 0) next.ftpPerKg = String(+(f / w).toFixed(2));
+    }
+    setProfile(next); setIcuProfile(null);
+    await saveProfile(next);
+    showToast(Object.keys(patch).length + "개 항목 적용 ✓");
   }
 
   async function handleCourseFile(files) {
@@ -1386,6 +1463,17 @@ export default function App() {
     }
     var condFactorFinal = Math.min(1.06, condFactor * hrCondAdj);
 
+    // ④ 회복 데이터 (Garmin HRV · 안정시 심박 via Intervals.icu)
+    var wellnessStatus = computeWellnessStatus(wellness, isoDate(new Date()));
+    if (wellnessStatus) {
+      condFactorFinal = Math.min(1.06, condFactorFinal * wellnessStatus.condAdj);
+      if (trainingReadiness) {
+        trainingReadiness.goods = trainingReadiness.goods.concat(wellnessStatus.goods);
+        trainingReadiness.warnings = trainingReadiness.warnings.concat(wellnessStatus.warnings);
+        trainingReadiness.details = trainingReadiness.details.concat(wellnessStatus.details);
+      }
+    }
+
     // ══════════════════════════════════════════════════════════════════
     // ④ 성별/나이 보정 계수
     // 근거: 동일 LT/VDOT이라도 나이·성별에 따라 레이스 퍼포먼스 다름
@@ -1679,7 +1767,7 @@ export default function App() {
       effectiveEleGain:courseData&&manualEleGain&&parseFloat(manualEleGain)>0?parseFloat(manualEleGain):(courseData?courseData.elevationGain:null),
       hasProfile:hasProfile, noActivity:noActivity,
       cyclingRows:cyclingRows, runningRows:runningRows,
-      trainingSummary:trainingSummary, sport:sport, trainingReadiness:trainingReadiness,
+      trainingSummary:trainingSummary, sport:sport, trainingReadiness:trainingReadiness, wellnessStatus:wellnessStatus,
     });
     setView("predict");
     } catch(err) {
@@ -1959,6 +2047,86 @@ export default function App() {
                 훈련 데이터가 쌓일수록 예측이 더 정밀해집니다.
               </div>
             </div>
+
+            {/* Intervals.icu 프로필 불러오기 */}
+            <div style={Object.assign(cardStyle(),{marginBottom:14,borderLeft:"3px solid "+C.blue})}>
+              <div style={secTitle(C.blue)}>// INTERVALS.ICU 연동</div>
+              {!icuProfile ? (
+                <div>
+                  <div style={{fontSize:12,color:"#a8b4c8",lineHeight:1.8,marginBottom:10}}>
+                    역치 페이스 · LTHR · 최대 심박 · FTP는 Intervals.icu 설정값, VO2max · 체중은 Garmin 측정값을 가져와요. 바뀌는 항목을 먼저 보여드리고, 확인해야 저장돼요.
+                  </div>
+                  <button onClick={loadIntervalsProfile} disabled={!!syncStatus} style={{
+                    width:"100%",padding:12,background:"transparent",color:C.blue,border:"1px solid "+C.blue,
+                    fontFamily:"monospace",fontSize:12,fontWeight:700,letterSpacing:2,cursor:syncStatus?"default":"pointer",opacity:syncStatus?0.6:1,
+                  }}>{syncStatus || "⟳ Intervals.icu에서 불러오기"}</button>
+                </div>
+              ) : (
+                <div>
+                  <div style={{fontSize:12,color:"#a8b4c8",marginBottom:10}}>바꿀 항목만 체크하세요</div>
+                  {icuProfile.map(function(r, i){
+                    return (
+                      <label key={r.key} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px solid "+C.border,cursor:"pointer"}}>
+                        <input type="checkbox" checked={r.on} onChange={function(){
+                          setIcuProfile(icuProfile.map(function(x, j){ return j===i ? Object.assign({}, x, {on:!x.on}) : x; }));
+                        }} />
+                        <div style={{flex:1}}>
+                          <div style={{fontFamily:"monospace",fontSize:12,color:C.text}}>{r.label}</div>
+                          {r.src && <div style={{fontFamily:"monospace",fontSize:10,color:C.muted}}>{r.src}</div>}
+                        </div>
+                        <div style={{fontFamily:"monospace",fontSize:12,textAlign:"right"}}>
+                          <span style={{color:C.muted}}>{r.cur}</span>
+                          <span style={{color:C.muted}}> → </span>
+                          <span style={{color:C.blue,fontWeight:700}}>{r.nxt}</span>
+                        </div>
+                      </label>
+                    );
+                  })}
+                  <div style={{display:"flex",gap:8,marginTop:12}}>
+                    <button onClick={function(){setIcuProfile(null);}} style={{flex:1,padding:12,background:"transparent",color:C.muted,border:"1px solid "+C.border,fontFamily:"monospace",fontSize:12,cursor:"pointer"}}>취소</button>
+                    <button onClick={applyIntervalsProfile} disabled={!icuProfile.some(function(r){return r.on;})} style={{flex:2,padding:12,background:C.blue,color:C.bg,border:"none",fontFamily:"monospace",fontSize:12,fontWeight:700,letterSpacing:2,cursor:"pointer",opacity:icuProfile.some(function(r){return r.on;})?1:0.4}}>선택 항목 적용</button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 회복 상태 */}
+            {(function(){
+              var ws = computeWellnessStatus(wellness, isoDate(new Date()));
+              if (!ws) return null;
+              var L = ws.latest;
+              var tiles = [
+                ["HRV", ws.hrv ? ws.hrv.recent+"ms" : (L.hrv ? L.hrv.value+"ms" : "—"), ws.hrv ? "평소 "+ws.hrv.low+"~"+ws.hrv.high : (L.hrv ? L.hrv.date.slice(5) : ""), ws.hrv && ws.hrv.state==="low" ? C.red : ws.hrv && ws.hrv.state==="high" ? C.accent : C.text],
+                ["안정시 심박", ws.rhr ? Math.round(ws.rhr.recent)+"bpm" : (L.restingHR ? L.restingHR.value+"bpm" : "—"), ws.rhr ? "평소 "+Math.round(ws.rhr.base) : "", ws.rhr && ws.rhr.diff>=5 ? C.red : C.text],
+                ["수면", ws.sleepAvg ? ws.sleepAvg+"h" : (L.sleepHours ? L.sleepHours.value+"h" : "—"), ws.sleepAvg ? "7일 평균" : "", ws.sleepAvg && ws.sleepAvg<6 ? C.red : C.text],
+                ["VO2max", L.vo2max ? String(L.vo2max.value) : "—", L.vo2max ? L.vo2max.date.slice(5) : "", C.text],
+              ];
+              var msgs = ws.warnings.map(function(m){return ["⚠ ", m, C.red];})
+                .concat(ws.goods.map(function(m){return ["✓ ", m, C.accent];}))
+                .concat(ws.details.map(function(m){return ["· ", m, C.muted];}));
+              return (
+                <div style={Object.assign(cardStyle(),{marginBottom:14})}>
+                  <div style={secTitle()}>// 회복 상태 (최근 7일)</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:msgs.length?10:0}}>
+                    {tiles.map(function(t){
+                      return (
+                        <div key={t[0]} style={{background:C.surface2,border:"1px solid "+C.border,padding:"10px 12px"}}>
+                          <div style={labelStyle()}>{t[0]}</div>
+                          <div style={{fontFamily:"monospace",fontSize:18,fontWeight:700,color:t[3]}}>{t[1]}</div>
+                          <div style={{fontFamily:"monospace",fontSize:10,color:C.muted,minHeight:14}}>{t[2]}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {msgs.map(function(m, i){
+                    return <div key={i} style={{fontSize:11,color:m[2],lineHeight:1.7}}>{m[0]}{m[1]}</div>;
+                  })}
+                  <div style={{fontSize:10,color:C.muted,marginTop:8,fontFamily:"monospace"}}>
+                    대회 예측의 컨디션 보정에 반영돼요 · SYNC 때 자동 갱신
+                  </div>
+                </div>
+              );
+            })()}
             <div style={Object.assign(cardStyle(),{marginBottom:10})}>
               <div style={secTitle()}>// 기본 정보</div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
