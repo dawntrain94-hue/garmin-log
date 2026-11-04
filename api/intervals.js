@@ -21,7 +21,22 @@ function authHeader() {
   return `Basic ${token}`;
 }
 
+// The app may be opened from a branch/preview URL (garmin-log-git-main-….vercel.app),
+// which Vercel's Standard Protection guards. The client always calls the production
+// API instead, so allow those sibling origins via CORS.
+const ALLOWED_ORIGIN = /^https:\/\/garmin-log(-[a-z0-9-]+)?\.vercel\.app$/;
+
 export default async function handler(req, res) {
+  const origin = req.headers.origin || '';
+  if (ALLOWED_ORIGIN.test(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Headers', 'x-ymc-secret');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Max-Age', '86400');
+  }
+  if (req.method === 'OPTIONS') return res.status(204).end();
+
   // The app is public, so block anyone who doesn't know the secret.
   const norm = (s) => String(s || '').normalize('NFKC').trim().replace(/^["']|["']$/g, '');
   const serverSecret = norm(process.env.YMC_SECRET);
