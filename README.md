@@ -37,4 +37,4 @@ claude.ai → Customize → Connectors → Add custom connector
 - URL: `https://garmin-log.vercel.app/api/mcp`
 - 인증: 요청 헤더 `Authorization: Bearer <YMC_SECRET>`
 
-읽기 전용 도구: `get_training_overview`, `list_activities`, `get_cycling_intensity`, `get_recovery`, `get_thresholds`, `get_activity`
+읽기 전용 도구: `get_training_overview`, `list_activities`, `get_cycling_intensity`, `get_recovery`, `get_thresholds`, `get_activity`, `get_activity_splits` (km별 구간·심박 드리프트·심박 존)

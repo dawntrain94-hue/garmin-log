@@ -14,6 +14,7 @@ import {
 import { buildPowerBins, sustainedMinutes } from '../src/intensity.js';
 import { computeWellnessStatus } from '../src/wellness.js';
 import { dedupeActivities } from '../src/dedupe.js';
+import { analyzeSplits, samplesFromStreams, samplesFromGpx } from './_splits.js';
 
 const SERVER_INFO = { name: 'ymc-training', title: 'YMC 훈련 기록', version: '1.0.0' };
 const SUPPORTED_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
@@ -237,6 +238,46 @@ const TOOLS = [
     description: 'Current thresholds from Intervals.icu settings: running LTHR, max HR, threshold pace (min/km); cycling FTP, LTHR, max HR. These are entered manually and may be outdated.',
     inputSchema: { type: 'object', properties: {} },
     async run() { return fetchSettings(); },
+  },
+  {
+    name: 'get_activity_splits',
+    title: '구간 기록 · 심박 흐름',
+    description: 'Per-km splits (default 1 km for runs, 5 km for rides) with pace/speed, avg & max HR, power, elevation; first-half vs second-half comparison with HR drift and aerobic decoupling % (pace:HR, or power:HR for rides with power; under ~5% means the effort was held aerobically); pace fade (first 3 vs last 3 splits); time in HR zones by % of LTHR. Uses the watch\'s own distance stream, so treadmill runs work; stops are excluded. Use this to analyse pacing, fatigue, or how a session went.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Activity id from list_activities, e.g. i123456789' },
+        split_km: { type: 'number', minimum: 0.2, maximum: 20, description: 'Split length in km (default 1 for runs, 5 for rides)' },
+      },
+      required: ['id'],
+    },
+    async run(args) {
+      const id = String(args.id || '').trim();
+      if (!ID_RE.test(id)) throw new ToolError('id 형식이 이상해요 (예: i123456789)');
+      const [raw, settings] = await Promise.all([icuJson(`/activity/${id}`), fetchSettings()]);
+      const a = toActivity(raw);
+      if (a.dataUnavailable) throw new ToolError(a.dataUnavailable);
+      const isRide = RIDE_TYPES.has(a.type);
+      const lthr = isRide ? settings.ride && settings.ride.lthr : settings.run && settings.run.lthr;
+
+      let samples = null, source = 'streams';
+      try { samples = samplesFromStreams(await icuJson(`/activity/${id}/streams.json`)); } catch (e) { if (e instanceof UpstreamError && e.status === 401) throw e; }
+      if (!samples) { source = 'gpx'; try { samples = samplesFromGpx((await icuGpxText(id)).text); } catch { /* fall through */ } }
+      if (!samples) throw new ToolError('이 활동은 시간·거리 기록이 없어서 구간 분석을 할 수 없어요');
+
+      const splitKm = parseFloat(args.split_km) > 0 ? Math.min(20, Math.max(0.2, parseFloat(args.split_km))) : null;
+      const result = analyzeSplits(samples, { isRide, splitKm, lthr });
+      if (!result) throw new ToolError('기록이 너무 짧거나 이동 구간이 없어서 분석할 수 없어요');
+      return {
+        activity: { id: a.id, date: a.date, name: a.name, type: a.type, device: a.device, recordedKm: a.km, recordedElevationGain: a.elevationGain },
+        source,
+        ...result,
+        notes: [
+          'Moving time only: gaps over 10 s and near-stationary samples are excluded, so totals can differ slightly from Garmin.',
+          'Elevation is smoothed (5-sample average, 1 m steps); recordedElevationGain is what the device reported.',
+        ],
+      };
+    },
   },
   {
     name: 'get_activity',
