@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { getSecret, setSecret, listActivities, fetchGpx, mapIntervalsType, UnauthorizedError } from "./intervalsSync";
 
 // ── 유틸 ──────────────────────────────────────────────────────────────────────
 function haversine(lat1, lon1, lat2, lon2) {
@@ -735,6 +736,7 @@ export default function App() {
   var _rr = useState(null); var raceResult = _rr[0], setRaceResult = _rr[1];
   var _rd = useState(false); var raceResultDrag = _rd[0], setRaceResultDrag = _rd[1];
   var raceResultRef = useRef();
+  var _sy = useState(null); var syncStatus = _sy[0], setSyncStatus = _sy[1];
 
   // ── storage
   var store = {
@@ -831,6 +833,84 @@ export default function App() {
       showToast(added+"개 저장 ✓  자동분류: "+detectedSports.join(", "));
       setView("log");
     } else { showToast("파싱 실패. 파일을 확인해주세요","error"); }
+  }
+
+  // ── Intervals.icu 자동 동기화 (Garmin → Intervals.icu → YMC)
+  function isoDate(d) {
+    var off = d.getTimezoneOffset() * 60000;
+    return new Date(d.getTime() - off).toISOString().slice(0, 10);
+  }
+  function looksLikeSameActivity(a, stats) {
+    // 예전에 GPX로 수동 업로드한 같은 활동은 건너뛰기
+    return a.activityDate === stats.activityDate
+      && Math.abs((a.distanceKm || 0) - (stats.distanceKm || 0)) < 0.3
+      && Math.abs((a.durationMin || 0) - (stats.durationMin || 0)) <= 3;
+  }
+  async function syncIntervals() {
+    if (syncStatus) return;
+    if (!getSecret()) {
+      var s = window.prompt("Vercel에 넣은 YMC_SECRET 값을 입력하세요 (이 기기에 한 번만 저장돼요)");
+      if (!s) return;
+      setSecret(s.trim());
+    }
+
+    // 마지막 기록 하루 전부터, 기록이 없으면 최근 60일
+    var dates = activities.map(function(a){return a.activityDate;}).filter(Boolean).sort();
+    var from = new Date();
+    if (dates.length) { from = new Date(dates[dates.length-1] + "T00:00:00"); from.setDate(from.getDate() - 1); }
+    else from.setDate(from.getDate() - 60);
+    var oldest = isoDate(from), newest = isoDate(new Date());
+
+    setSyncStatus("목록 확인 중…");
+    try {
+      var list = await listActivities(oldest, newest);
+      var known = {};
+      activities.forEach(function(a){ if (a.intervalsId) known[a.intervalsId] = true; });
+
+      var stravaOnly = 0, unsupported = 0;
+      var todo = list.filter(function(m) {
+        if (known[m.id]) return false;
+        if (m.unavailable) { stravaOnly++; return false; }
+        if (!mapIntervalsType(m.type)) { unsupported++; return false; }
+        return true;
+      });
+
+      var newList = activities.slice(), added = 0, dup = 0, failed = 0;
+      for (var i = 0; i < todo.length; i++) {
+        var meta = todo[i];
+        setSyncStatus("가져오는 중 " + (i+1) + "/" + todo.length);
+        var stats = null;
+        try { stats = parseActivityGPX(await fetchGpx(meta.id)); } catch(e) { if (e instanceof UnauthorizedError) throw e; }
+        if (!stats || !stats.distanceKm) { failed++; continue; }
+        if (meta.start) stats.activityDate = String(meta.start).slice(0, 10); // 현지 날짜 기준
+        if (meta.name) stats.name = meta.name;
+        if (newList.some(function(a){ return !a.intervalsId && looksLikeSameActivity(a, stats); })) { dup++; continue; }
+        newList.unshift(Object.assign({
+          id: "a_" + Date.now() + "_" + Math.random().toString(36).slice(2,5),
+          sport: mapIntervalsType(meta.type),
+          uploadedAt: new Date().toISOString(),
+          fileName: "intervals.icu " + meta.id,
+          intervalsId: meta.id,
+          source: "intervals",
+        }, stats));
+        added++;
+      }
+
+      if (added > 0) {
+        setActivities(newList); await saveActivities(newList);
+      }
+      var notes = [];
+      if (dup) notes.push("중복 " + dup);
+      if (unsupported) notes.push("기타 종목 " + unsupported);
+      if (failed) notes.push("GPS 없음/실패 " + failed);
+      if (stravaOnly) notes.push("Strava 경유 " + stravaOnly + " (Garmin 직접 연결 필요)");
+      showToast((added ? added + "개 가져옴 ✓" : "새 활동 없음") + (notes.length ? " · " + notes.join(", ") : ""), failed && !added ? "error" : "ok");
+    } catch(e) {
+      if (e instanceof UnauthorizedError) { setSecret(""); showToast("비밀키가 맞지 않아요. 다시 눌러서 입력해 주세요", "error"); }
+      else showToast("동기화 실패: " + (e.message || "오류"), "error");
+    } finally {
+      setSyncStatus(null);
+    }
   }
 
   async function handleCourseFile(files) {
@@ -1691,6 +1771,10 @@ export default function App() {
                 onDrop={function(e){e.preventDefault();setActDrag(false);handleActivityFiles(e.dataTransfer.files);}}
                 style={{border:"1px solid "+C.accent,padding:"6px 14px",cursor:"pointer",fontFamily:"monospace",fontSize:11,color:C.accent,fontWeight:700,background:actDrag?"rgba(0,229,160,0.08)":"transparent",transition:"all .15s",flexShrink:0}}>
                 + GPX
+              </div>
+              <div onClick={syncIntervals} title="Intervals.icu에서 새 활동 가져오기"
+                style={{border:"1px solid "+C.blue,padding:"6px 14px",cursor:syncStatus?"default":"pointer",fontFamily:"monospace",fontSize:11,color:C.blue,fontWeight:700,opacity:syncStatus?0.6:1,transition:"all .15s",flexShrink:0}}>
+                {syncStatus || "⟳ SYNC"}
               </div>
             </div>
 
