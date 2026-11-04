@@ -16,8 +16,10 @@ const BASE = 'https://intervals.icu/api/v1';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const ID_RE = /^i?\d+$/;
 
+const clean = (s) => String(s || '').normalize('NFKC').trim().replace(/^["']|["']$/g, '');
+
 function authHeader() {
-  const token = Buffer.from(`API_KEY:${process.env.INTERVALS_API_KEY}`).toString('base64');
+  const token = Buffer.from(`API_KEY:${clean(process.env.INTERVALS_API_KEY)}`).toString('base64');
   return `Basic ${token}`;
 }
 
@@ -25,6 +27,17 @@ function authHeader() {
 // which Vercel's Standard Protection guards. The client always calls the production
 // API instead, so allow those sibling origins via CORS.
 const ALLOWED_ORIGIN = /^https:\/\/garmin-log(-[a-z0-9-]+)?\.vercel\.app$/;
+
+// Never pass Intervals.icu's own 401/403 through: the app would mistake it for our secret check
+async function upstreamError(res, r) {
+  const msg = {
+    401: 'Intervals.icu가 API 키를 거절했어요. INTERVALS_API_KEY를 확인해 주세요',
+    403: 'Intervals.icu 접근이 거부됐어요. INTERVALS_ATHLETE_ID가 API 키 주인과 같은지 확인해 주세요',
+    404: 'Intervals.icu에서 찾을 수 없어요. INTERVALS_ATHLETE_ID를 확인해 주세요',
+    429: 'Intervals.icu 요청이 너무 많아요. 잠시 후 다시 시도해 주세요',
+  }[r.status] || `Intervals.icu 오류 (${r.status})`;
+  return res.status(502).json({ error: msg, upstreamStatus: r.status });
+}
 
 export default async function handler(req, res) {
   const origin = req.headers.origin || '';
@@ -60,7 +73,12 @@ export default async function handler(req, res) {
   }
 
   const { action, oldest, newest, id } = req.query;
-  const athlete = process.env.INTERVALS_ATHLETE_ID || '0';
+  let athlete = clean(process.env.INTERVALS_ATHLETE_ID).toLowerCase() || '0';
+  if (/^[1-9]\d*$/.test(athlete)) athlete = 'i' + athlete; // 숫자만 넣은 경우
+  const found = athlete.match(/(?:^|[^a-z0-9])(i\d+)(?:$|[^0-9])/); if (found) athlete = found[1]; // URL째 붙여넣은 경우
+  if (!/^(0|i\d+)$/.test(athlete)) {
+    return res.status(500).json({ error: `INTERVALS_ATHLETE_ID 형식이 이상해요 ("i" + 숫자, 예: i123456). 지금 ${athlete.length}자` });
+  }
 
   try {
     if (action === 'list') {
@@ -72,7 +90,7 @@ export default async function handler(req, res) {
         `${BASE}/athlete/${athlete}/activities?oldest=${oldest}&newest=${end}`,
         { headers: { Authorization: authHeader() } }
       );
-      if (!r.ok) return res.status(r.status).json({ error: await r.text() });
+      if (!r.ok) return upstreamError(res, r);
 
       const data = await r.json();
       const activities = data.map((a) => ({
@@ -101,7 +119,7 @@ export default async function handler(req, res) {
       const r = await fetch(`${BASE}/activity/${id}/gpx-file`, {
         headers: { Authorization: authHeader() },
       });
-      if (!r.ok) return res.status(r.status).json({ error: await r.text() });
+      if (!r.ok) return upstreamError(res, r);
 
       let buf = Buffer.from(await r.arrayBuffer());
       if (buf[0] === 0x1f && buf[1] === 0x8b) buf = gunzipSync(buf); // gzipped response
