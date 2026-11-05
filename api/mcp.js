@@ -15,8 +15,10 @@ import { buildPowerBins, sustainedMinutes } from '../src/intensity.js';
 import { computeWellnessStatus } from '../src/wellness.js';
 import { dedupeActivities } from '../src/dedupe.js';
 import { analyzeSplits, samplesFromStreams, samplesFromGpx } from './_splits.js';
+import { flatVenueReason } from '../src/elevation.js';
+import { predictRace, calcVDOT } from '../src/predict.js';
 
-const SERVER_INFO = { name: 'ymc-training', title: 'YMC 훈련 기록', version: '1.0.0' };
+const SERVER_INFO = { name: 'ymc-training', title: 'YMC 훈련 기록', version: '1.1.0' };
 const SUPPORTED_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const INSTRUCTIONS = [
   'YMC training data for one athlete (trail running, road running, cycling/granfondo, MTB), read live from Intervals.icu (synced from Garmin).',
@@ -24,12 +26,17 @@ const INSTRUCTIONS = [
   'Training load / fitness / fatigue / form are Intervals.icu\'s own model, not YMC\'s TRIMP model; say so when quoting them.',
   'Thresholds come from the athlete\'s Intervals.icu settings, which are entered manually and can be out of date.',
   'When the same workout was recorded on two devices at once (bike computer + watch), only the recording with power is returned; duplicateRecordingsHidden lists the hidden ones. Intervals.icu\'s own fitness/fatigue numbers may still include both copies.',
+  'Elevation on track, treadmill and indoor activities is set to 0 (recordedElevationGain keeps what the device reported).',
+  'For race-time questions use predict_race: it runs the same prediction model as the YMC app (readiness, durability, TID, condition factor).',
   'Start with get_training_overview for general questions; drill down with the other tools.',
 ].join(' ');
 
 const RIDE_TYPES = new Set(['Ride', 'VirtualRide', 'GravelRide', 'EBikeRide', 'MountainBikeRide']);
 const RUN_TYPES = new Set(['Run', 'TrailRun', 'VirtualRun']);
 const r1 = (v) => (v == null ? null : Math.round(v * 10) / 10);
+// 5.46 (min/km) → "5:28"
+const paceText = (p) => { let m = Math.floor(p), sec = Math.round((p - m) * 60); if (sec === 60) { m++; sec = 0; } return `${m}:${String(sec).padStart(2, '0')}`; };
+const minText = (min) => { const t = Math.round(min * 60), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sec = t % 60; return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`; };
 
 // ── date helpers (athlete is in Asia/Seoul)
 const TZ_OFFSET_MS = 9 * 3600 * 1000;
@@ -49,6 +56,14 @@ const weekStart = (dateStr) => { const d = new Date(dateStr + 'T00:00:00Z'); con
 
 class ToolError extends Error {}
 
+// "1:52:30" / "52:30" → 분
+function parseClock(v) {
+  const parts = String(v || '').trim().split(':').map((x) => parseFloat(x));
+  if (!parts.length || parts.some((x) => !(x >= 0))) return null;
+  const sec = parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : parts.length === 2 ? parts[0] * 60 + parts[1] : null;
+  return sec > 0 ? sec / 60 : null;
+}
+
 function athletePath() {
   const a = resolveAthlete();
   if (!a) throw new ToolError('서버의 INTERVALS_ATHLETE_ID 형식이 이상해요 ("i" + 숫자 또는 0)');
@@ -60,6 +75,9 @@ function toActivity(a) {
   const km = num(a.distance) ? a.distance / 1000 : null;
   const movingMin = num(a.moving_time) ? a.moving_time / 60 : null;
   const isRun = RUN_TYPES.has(a.type);
+  const pace = isRun && km && movingMin ? movingMin / km : null;
+  const recordedGain = num(a.total_elevation_gain) ? Math.round(a.total_elevation_gain) : null;
+  const flat = flatVenueReason({ type: a.type, name: a.name, trainer: a.trainer });
   return {
     id: a.id,
     date: String(a.start_date_local || '').slice(0, 10),
@@ -68,14 +86,17 @@ function toActivity(a) {
     type: a.type || null,
     km: r1(km),
     movingMin: movingMin ? Math.round(movingMin) : null,
-    elevationGain: num(a.total_elevation_gain) ? Math.round(a.total_elevation_gain) : null,
+    elevationGain: flat ? 0 : recordedGain,
+    recordedElevationGain: flat && recordedGain ? recordedGain : undefined,
+    elevationNote: flat && recordedGain ? flat : undefined,
     avgHR: num(a.average_heartrate) ? Math.round(a.average_heartrate) : null,
     maxHR: num(a.max_heartrate) ? Math.round(a.max_heartrate) : null,
     avgPower: num(a.icu_average_watts) ? Math.round(a.icu_average_watts) : null,
     normalizedPower: num(a.icu_weighted_avg_watts) ? Math.round(a.icu_weighted_avg_watts) : null,
     intensityFactor: num(a.icu_intensity) ? +(a.icu_intensity / 100).toFixed(2) : null,
     load: num(a.icu_training_load) ? Math.round(a.icu_training_load) : null,
-    paceMinKm: isRun && km && movingMin ? +(movingMin / km).toFixed(2) : null,
+    paceMinKm: pace ? +pace.toFixed(2) : null,
+    pace: pace ? paceText(pace) : null, // mm:ss /km
     device: a.device_name || null,
     dataUnavailable: a._note ? 'Strava를 거쳐 들어온 활동이라 Intervals.icu가 상세 데이터를 주지 않음' : undefined,
   };
@@ -240,6 +261,107 @@ const TOOLS = [
     async run() { return fetchSettings(); },
   },
   {
+    name: 'predict_race',
+    title: '대회 기록 예측',
+    description: 'Predict a race finish time with the YMC app\'s own model (same code as the app\'s 🎯 예측 tab): pace/time rows (recommended row flagged), training readiness score with reasons, durability index (expected late-race slowdown from long-run history), training intensity distribution, and the condition factor from recent load, HR and HRV/resting HR. Built from the last 120 days of Intervals.icu activities and the athlete\'s Intervals.icu thresholds (LT pace, LTHR, max HR, FTP), which are entered manually and may be stale. For road running, pass a recent race result (recent_race_km + recent_race_time) or vdot to add the Jack Daniels VDOT estimate; otherwise the LT-pace and training-pace estimates are used. Use for "what time will I run/ride?", sub-X goals and race readiness.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sport: { type: 'string', enum: ['road_run', 'trail_run', 'cycling', 'mtb'], description: 'Target race type' },
+        distance_km: { type: 'number', minimum: 1, maximum: 400, description: 'Race distance, e.g. 42.195' },
+        elevation_gain_m: { type: 'number', minimum: 0, maximum: 15000, description: 'Course elevation gain in m (optional; recommended for trail and cycling)' },
+        recent_race_km: { type: 'number', minimum: 1, maximum: 100, description: 'Distance of a recent race or all-out effort (road running VDOT)' },
+        recent_race_time: { type: 'string', description: 'Its finish time, h:mm:ss or mm:ss' },
+        vdot: { type: 'number', minimum: 20, maximum: 90, description: 'VDOT if already known (overrides recent_race_*)' },
+        age: { type: 'integer', minimum: 10, maximum: 100 },
+        gender: { type: 'string', enum: ['male', 'female'] },
+        goal_time: { type: 'string', description: 'Optional goal, h:mm:ss — the result then says the goal pace and the gap to the recommended prediction' },
+      },
+      required: ['sport', 'distance_km'],
+    },
+    async run(args) {
+      const sport = String(args.sport || '');
+      if (!['road_run', 'trail_run', 'cycling', 'mtb'].includes(sport)) throw new ToolError('sport는 road_run / trail_run / cycling / mtb 중 하나예요');
+      const raceKm = parseFloat(args.distance_km);
+      if (!(raceKm > 0)) throw new ToolError('distance_km가 필요해요');
+      const isCycling = sport === 'cycling' || sport === 'mtb';
+
+      const today = todayLocal();
+      const [acts, wellRaw, settings] = await Promise.all([
+        fetchActivities(addDays(today, -119), today),
+        icuJson(`${athletePath()}/wellness?oldest=${addDays(today, -59)}&newest=${today}`),
+        fetchSettings(),
+      ]);
+
+      // Intervals.icu 행 → YMC 앱 활동 형태 (트레드밀도 러닝 볼륨으로 포함)
+      const SPORT_OF = { Run: 'road_run', VirtualRun: 'road_run', TrailRun: 'trail_run', Ride: 'cycling', VirtualRide: 'cycling', GravelRide: 'cycling', EBikeRide: 'cycling', MountainBikeRide: 'mtb' };
+      const usable = acts.filter((a) => !a.dataUnavailable && SPORT_OF[a.type] && a.km > 0);
+      const ymcActs = usable.sort((a, b) => String(b.start).localeCompare(String(a.start))).map((a) => ({
+        id: a.id, sport: SPORT_OF[a.type], activityDate: a.date, name: a.name,
+        distanceKm: a.km, durationMin: a.movingMin || 0,
+        avgPaceMinKm: a.km && a.movingMin ? +(a.movingMin / a.km).toFixed(2) : 0,
+        avgHR: a.avgHR, elevationGain: a.elevationGain || 0, avgPower: a.avgPower,
+      }));
+
+      // 사이클 목표면 파워 상세(30초 bins)를 읽어서 지속 고강도 시간 평가에 사용
+      if (isCycling) {
+        const cutoff = addDays(today, -69);
+        const rides = ymcActs.filter((a) => (a.sport === 'cycling' || a.sport === 'mtb') && a.avgPower && a.activityDate >= cutoff).slice(0, 30);
+        await mapLimit(rides, 4, async (a) => { const { text } = await icuGpxText(a.id); a.powerBins = buildPowerBins(gpxPowerSeries(text)); });
+      }
+
+      const run = settings.run || {}, ride = settings.ride || {};
+      let vdot = parseFloat(args.vdot) > 0 ? parseFloat(args.vdot) : null, vdotFrom = vdot ? 'given' : null;
+      if (!vdot && args.recent_race_km && args.recent_race_time) {
+        const t = parseClock(args.recent_race_time);
+        if (!t) throw new ToolError('recent_race_time 형식이 이상해요 (예: 1:52:30)');
+        vdot = calcVDOT(parseFloat(args.recent_race_km), t); vdotFrom = `${args.recent_race_km}km ${args.recent_race_time}`;
+      }
+      const wl = (Array.isArray(wellRaw) ? wellRaw : []).map(toWellness).filter(Boolean);
+      const latestWeight = wl.slice().reverse().find((w) => w.weight);
+      const profile = {
+        ltPaceMinKm: run.thresholdPaceMinKm || '', ltHR: run.lthr || ride.lthr || '', maxHR: run.maxHr || ride.maxHr || '',
+        ftp: ride.ftp || '', weight: latestWeight ? latestWeight.weight : '',
+        vdot: vdot ? String(vdot) : '', age: args.age ? String(args.age) : '', gender: args.gender || 'male',
+      };
+      const gain = parseFloat(args.elevation_gain_m) >= 0 && args.elevation_gain_m != null ? parseFloat(args.elevation_gain_m) : null;
+      const courseData = gain != null || isCycling
+        ? { distanceKm: raceKm, elevationGain: gain || 0, gainPerKm: (gain || 0) / raceKm, elevProfile: null }
+        : null;
+
+      const r = predictRace({ activities: ymcActs, profile, wellness: wl, sport, raceKm, courseData, now: Date.now(), today });
+      if (r.error) throw new ToolError(r.error);
+
+      const rec = (r.runningRows || []).find((x) => x.isRecommended) || null;
+      let goal;
+      const goalMin = args.goal_time ? parseClock(args.goal_time) : null;
+      if (args.goal_time && !goalMin) throw new ToolError('goal_time 형식이 이상해요 (예: 3:59:59)');
+      if (goalMin && !isCycling) {
+        goal = { time: args.goal_time, paceRequired: paceText(goalMin / raceKm) };
+        if (rec) goal.gapVsRecommendedMin = +(rec.totalMin - goalMin).toFixed(1); // +면 예측이 목표보다 느림
+      }
+      const ts = r.trainingSummary;
+      return {
+        asOf: today,
+        race: { sport, distanceKm: raceKm, elevationGainM: gain ?? undefined },
+        prediction: (r.runningRows || []).map((x) => ({ label: x.label, recommended: x.isRecommended || undefined, pace: paceText(x.paceMinKm), time: minText(x.totalMin), basis: x.desc })),
+        cyclingPrediction: r.cyclingRows ? r.cyclingRows.map((x) => ({ label: x.label, power: x.power, intensityFactor: x.if_val, avgSpeedKmh: x.speed, time: x.time, movingTime: x.movTime, basis: x.desc })) : undefined,
+        goal,
+        readiness: r.trainingReadiness ? { scorePct: r.trainingReadiness.score, level: r.trainingReadiness.level, goods: r.trainingReadiness.goods, warnings: r.trainingReadiness.warnings, notes: r.trainingReadiness.details } : null,
+        durability: ts && ts.durability ? { score: ts.durability.score, label: ts.durability.label, longSessions: ts.durability.longActsCount, crossLongSessions: ts.durability.crossLongCount, longKmTotal: ts.durability.totalLongKm, expectedLateSlowdownPct: Math.round(ts.durability.lateDecayPct * 1000) / 10, longThresholdKm: Math.round(raceKm * 0.6 * 10) / 10 } : null,
+        intensityDistribution: ts && ts.tid ? { z1Pct: ts.tid.z1Pct, z2Pct: ts.tid.z2Pct, z3Pct: ts.tid.z3Pct, activities: ts.tid.total, feedback: ts.tid.feedback, basis: 'per-activity average HR vs max HR (<75% / 75-87% / ≥87%)' } : null,
+        condition: ts ? { factor: +ts.condFactorFinal.toFixed(3), label: ts.condLabel, meaning: '>1 slows the prediction (fatigue), <1 speeds it up' } : null,
+        training: ts ? { window: ts.fitnessWindow, activities: ts.count, weeklyKm: +ts.weeklyKm, last7dKm: +ts.wk7km, prev3wkAvgKm: +ts.wk4avg, longestKm: +ts.maxDist, avgPace: ts.avgPace, longRunPace: ts.longPace, crossTrainingSharePct: ts.crossWeight || 0 } : null,
+        inputs: {
+          ltPace: profile.ltPaceMinKm ? paceText(+profile.ltPaceMinKm) : null,
+          ltHR: profile.ltHR || null, maxHR: profile.maxHR || null, ftp: profile.ftp || null, weightKg: profile.weight || null,
+          vdot: vdot || null, vdotFrom: vdotFrom || undefined,
+          note: 'LT pace, LTHR, max HR and FTP come from Intervals.icu settings (entered manually, may be stale). Treadmill runs count toward running volume.',
+        },
+      };
+    },
+  },
+  {
     name: 'get_activity_splits',
     title: '구간 기록 · 심박 흐름',
     description: 'Per-km splits (default 1 km for runs, 5 km for rides) with pace/speed, avg & max HR, power, elevation; first-half vs second-half comparison with HR drift and aerobic decoupling % (pace:HR, or power:HR for rides with power; under ~5% means the effort was held aerobically); pace fade (first 3 vs last 3 splits); time in HR zones by % of LTHR. Uses the watch\'s own distance stream, so treadmill runs work; stops are excluded. Use this to analyse pacing, fatigue, or how a session went.',
@@ -266,15 +388,16 @@ const TOOLS = [
       if (!samples) throw new ToolError('이 활동은 시간·거리 기록이 없어서 구간 분석을 할 수 없어요');
 
       const splitKm = parseFloat(args.split_km) > 0 ? Math.min(20, Math.max(0.2, parseFloat(args.split_km))) : null;
-      const result = analyzeSplits(samples, { isRide, splitKm, lthr });
+      const flat = flatVenueReason({ type: raw.type, name: raw.name, trainer: raw.trainer });
+      const result = analyzeSplits(samples, { isRide, splitKm, lthr, flat: !!flat });
       if (!result) throw new ToolError('기록이 너무 짧거나 이동 구간이 없어서 분석할 수 없어요');
       return {
-        activity: { id: a.id, date: a.date, name: a.name, type: a.type, device: a.device, recordedKm: a.km, recordedElevationGain: a.elevationGain },
+        activity: { id: a.id, date: a.date, name: a.name, type: a.type, device: a.device, recordedKm: a.km, recordedElevationGain: a.recordedElevationGain ?? a.elevationGain, elevationNote: flat || undefined },
         source,
         ...result,
         notes: [
           'Moving time only: gaps over 10 s and near-stationary samples are excluded, so totals can differ slightly from Garmin.',
-          'Elevation is smoothed (5-sample average, 1 m steps); recordedElevationGain is what the device reported.',
+          flat ? `Elevation set to 0: ${flat}.` : 'Elevation is smoothed (5-sample average, 1 m steps); recordedElevationGain is what the device reported.',
         ],
       };
     },

@@ -56,7 +56,8 @@ export function analyzeSplits(samples, opts = {}) {
   const splitM = (opts.splitKm || (isRide ? 5 : 1)) * 1000;
   const minSpeed = isRide ? 1.5 : 0.8; // m/s 이하면 정지로 봄
   if (!samples || samples.length < 30) return null;
-  const alt = smoothAlt(samples);
+  // 트랙·트레드밀·실내는 평지: 고도 잡음을 무시
+  const alt = opts.flat ? samples.map(() => null) : smoothAlt(samples);
 
   // 구간(segment) 목록
   const segs = [];

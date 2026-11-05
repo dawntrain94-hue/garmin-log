@@ -96,6 +96,7 @@ export default async function handler(req, res) {
         load: a.icu_training_load,
         avgPower: a.icu_average_watts || null, // 중복(기기 2대 동시 기록) 판단용
         device: a.device_name,
+        trainer: a.trainer === true,       // 실내 훈련 (고도 보정용)
         source: a.source,
         // Strava-synced activities come back as stubs with a _note and no data
         unavailable: Boolean(a._note),
