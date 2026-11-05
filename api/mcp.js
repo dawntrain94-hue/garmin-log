@@ -14,7 +14,7 @@ import {
 import { buildPowerBins, sustainedMinutes } from '../src/intensity.js';
 import { computeWellnessStatus } from '../src/wellness.js';
 import { dedupeActivities } from '../src/dedupe.js';
-import { analyzeSplits, samplesFromStreams, samplesFromGpx } from './_splits.js';
+import { loadActivitySplits, SplitsError } from './_activitySplits.js';
 import { flatVenueReason } from '../src/elevation.js';
 import { predictRace, calcVDOT } from '../src/predict.js';
 
@@ -376,25 +376,14 @@ const TOOLS = [
     async run(args) {
       const id = String(args.id || '').trim();
       if (!ID_RE.test(id)) throw new ToolError('id 형식이 이상해요 (예: i123456789)');
-      const [raw, settings] = await Promise.all([icuJson(`/activity/${id}`), fetchSettings()]);
+      let r;
+      try { r = await loadActivitySplits(id, args.split_km); } catch (e) { if (e instanceof SplitsError) throw new ToolError(e.message); throw e; }
+      const { raw, flat, source, availableStreams, result } = r;
       const a = toActivity(raw);
-      if (a.dataUnavailable) throw new ToolError(a.dataUnavailable);
-      const isRide = RIDE_TYPES.has(a.type);
-      const lthr = isRide ? settings.ride && settings.ride.lthr : settings.run && settings.run.lthr;
-
-      let samples = null, source = 'streams';
-      try { samples = samplesFromStreams(await icuJson(`/activity/${id}/streams.json`)); } catch (e) { if (e instanceof UpstreamError && e.status === 401) throw e; }
-      if (!samples) { source = 'gpx'; try { samples = samplesFromGpx((await icuGpxText(id)).text); } catch { /* fall through */ } }
-      if (!samples) throw new ToolError('이 활동은 시간·거리 기록이 없어서 구간 분석을 할 수 없어요');
-
-      const splitKm = parseFloat(args.split_km) > 0 ? Math.min(20, Math.max(0.2, parseFloat(args.split_km))) : null;
-      const flat = flatVenueReason({ type: raw.type, name: raw.name, trainer: raw.trainer });
-      const result = analyzeSplits(samples, { isRide, splitKm, lthr, flat: !!flat });
-      if (!result) throw new ToolError('기록이 너무 짧거나 이동 구간이 없어서 분석할 수 없어요');
       return {
         activity: { id: a.id, date: a.date, name: a.name, type: a.type, device: a.device, recordedKm: a.km, recordedElevationGain: a.recordedElevationGain ?? a.elevationGain, elevationNote: flat || undefined },
         source,
-        availableStreams: samples.streamTypes,
+        availableStreams,
         ...result,
         notes: [
           'Moving time only: gaps over 10 s and near-stationary samples are excluded, so totals can differ slightly from Garmin.',

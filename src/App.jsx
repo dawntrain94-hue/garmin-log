@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { getSecret, setSecret, listActivities, fetchGpx, mapIntervalsType, UnauthorizedError, fetchWellness, fetchIntervalsProfile } from "./intervalsSync";
+import { getSecret, setSecret, listActivities, fetchGpx, mapIntervalsType, UnauthorizedError, fetchWellness, fetchIntervalsProfile, fetchSplits } from "./intervalsSync";
 import { mergeWellness, computeWellnessStatus } from "./wellness";
 import { buildPowerBins, sustainedMinutes } from "./intensity";
 import { dedupeActivities } from "./dedupe";
@@ -586,6 +586,93 @@ function tabBtn(active) {
   return {background:active?C.accent:"transparent",color:active?C.bg:C.muted,border:"none",padding:"8px 16px",cursor:"pointer",fontFamily:"monospace",fontSize:11,letterSpacing:1,fontWeight:active?700:400,transition:"all .15s"};
 }
 
+// ── 구간·폼 분석 패널 (활동 상세) ─────────────────────────────────────────────
+export function SplitsPanel(props) {
+  var d = props.data, isRide = props.isRide;
+  if (!d || !d.splits || !d.splits.length) return null;
+  var fc = d.formChange, h = d.halves;
+  var dropKm = fc && fc.strideDropFromKm;
+  var hasCad = d.splits.some(function(s){ return s.cadenceSpm; });
+  var hasGct = d.splits.some(function(s){ return s.groundContactMs; });
+  var th = {fontFamily:"monospace",fontSize:9,color:C.muted,letterSpacing:1,padding:"4px 6px",textAlign:"right",fontWeight:400,whiteSpace:"nowrap"};
+  var td = {fontFamily:"monospace",fontSize:11,color:C.text,padding:"4px 6px",textAlign:"right",whiteSpace:"nowrap"};
+  function pct(v){ return v == null ? "—" : (v > 0 ? "+" : "") + v + "%"; }
+  function row(label, a, b, chg, col) {
+    return (
+      <tr key={label}>
+        <td style={Object.assign({}, td, {textAlign:"left",color:C.muted})}>{label}</td>
+        <td style={td}>{a}</td><td style={td}>{b}</td>
+        <td style={Object.assign({}, td, {color:col||C.text,fontWeight:700})}>{chg}</td>
+      </tr>
+    );
+  }
+  return (
+    <div style={{marginTop:12}}>
+      {h && (
+        <div style={Object.assign(cardStyle(),{marginBottom:12})}>
+          <div style={secTitle()}>📉 심박 흐름</div>
+          <div style={{fontFamily:"monospace",fontSize:12,color:C.text,lineHeight:1.9}}>
+            전반 {isRide ? h.first.speedKmh+"km/h" : formatPace(h.first.paceMinKm)} · {h.first.avgHR||"—"}bpm → 후반 {isRide ? h.second.speedKmh+"km/h" : formatPace(h.second.paceMinKm)} · {h.second.avgHR||"—"}bpm
+            <br />심박 드리프트 {h.hrDriftBpm != null ? (h.hrDriftBpm > 0 ? "+" : "") + h.hrDriftBpm + "bpm" : "—"} · 디커플링{" "}
+            <span style={{color: h.aerobicDecouplingPct > 5 ? C.red : C.accent, fontWeight:700}}>{h.aerobicDecouplingPct != null ? h.aerobicDecouplingPct + "%" : "—"}</span>
+            <span style={{color:C.muted,fontSize:10}}> (5% 미만이면 유산소로 유지)</span>
+          </div>
+        </div>
+      )}
+      {fc && (
+        <div style={Object.assign(cardStyle(),{marginBottom:12,borderLeft:"3px solid "+C.gold})}>
+          <div style={secTitle(C.gold)}>🦵 폼 변화 — 피크 {fc.peak.splits}km vs 마지막 {fc.last3.splits}km</div>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead><tr><th style={Object.assign({}, th, {textAlign:"left"})}></th><th style={th}>피크</th><th style={th}>마지막</th><th style={th}>변화</th></tr></thead>
+            <tbody>
+              {row("페이스", formatPace(fc.peak.paceMinKm), formatPace(fc.last3.paceMinKm), "속도 " + pct(fc.peakToLast.speedChangePct), C.red)}
+              {row("케이던스", fc.peak.cadenceSpm + " spm", fc.last3.cadenceSpm + " spm", pct(fc.peakToLast.cadenceChangePct))}
+              {row("보폭", fc.peak.strideM + " m", fc.last3.strideM + " m", pct(fc.peakToLast.strideChangePct), Math.abs(fc.peakToLast.strideChangePct) > 3 ? C.red : C.text)}
+              {fc.dynamics && fc.dynamics.groundContactMs && row("접지 시간", Math.round(fc.dynamics.groundContactMs.peak) + " ms", Math.round(fc.dynamics.groundContactMs.last3) + " ms", (fc.dynamics.groundContactMs.change > 0 ? "+" : "") + Math.round(fc.dynamics.groundContactMs.change) + " ms", fc.dynamics.groundContactMs.change >= 10 ? C.red : C.text)}
+              {fc.dynamics && fc.dynamics.verticalOscCm && row("수직 진폭", fc.dynamics.verticalOscCm.peak + " cm", fc.dynamics.verticalOscCm.last3 + " cm", (fc.dynamics.verticalOscCm.change > 0 ? "+" : "") + fc.dynamics.verticalOscCm.change + " cm")}
+              {fc.dynamics && fc.dynamics.verticalRatioPct && row("수직 비율", fc.dynamics.verticalRatioPct.peak + "%", fc.dynamics.verticalRatioPct.last3 + "%", (fc.dynamics.verticalRatioPct.change > 0 ? "+" : "") + fc.dynamics.verticalRatioPct.change + "%p")}
+            </tbody>
+          </table>
+          <div style={{fontFamily:"monospace",fontSize:11,color:"#a8b4c8",marginTop:8,lineHeight:1.8}}>
+            {fc.peakToLast.strideSharePct != null && <div>느려진 속도 중 <span style={{color:C.gold,fontWeight:700}}>{fc.peakToLast.strideSharePct}%</span>가 보폭 변화에서 옴 (나머지는 케이던스)</div>}
+            {dropKm ? <div>보폭이 피크보다 3% 넘게 줄어든 상태가 <span style={{color:C.red,fontWeight:700}}>{dropKm}km</span>부터 이어짐</div> : <div>피크 이후 보폭이 크게 줄어든 구간 없음</div>}
+          </div>
+        </div>
+      )}
+      <div style={Object.assign(cardStyle(),{overflowX:"auto"})}>
+        <div style={secTitle()}>📋 구간 기록{d.elevationNote ? " · 트랙·실내 고도 0" : ""}</div>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead><tr>
+            <th style={Object.assign({}, th, {textAlign:"left"})}>KM</th>
+            <th style={th}>{isRide ? "속도" : "페이스"}</th><th style={th}>심박</th>
+            {d.splits.some(function(s){return s.avgPower;}) && <th style={th}>파워</th>}
+            {hasCad && <th style={th}>케이던스</th>}{hasCad && <th style={th}>보폭</th>}
+            {hasGct && <th style={th}>접지</th>}
+          </tr></thead>
+          <tbody>
+            {d.splits.map(function(s){
+              var late = dropKm && s.split >= dropKm;
+              var hasPwr = d.splits.some(function(x){return x.avgPower;});
+              return (
+                <tr key={s.split} style={{borderTop:"1px solid "+C.border, background: late ? "rgba(255,107,53,0.06)" : "transparent"}}>
+                  <td style={Object.assign({}, td, {textAlign:"left",color:C.muted})}>{s.split}{s.partial ? "*" : ""}</td>
+                  <td style={Object.assign({}, td, {color:C.accent})}>{isRide ? s.speedKmh : formatPace(s.paceMinKm)}</td>
+                  <td style={Object.assign({}, td, {color:C.red})}>{s.avgHR || "—"}</td>
+                  {hasPwr && <td style={Object.assign({}, td, {color:C.blue})}>{s.avgPower || "—"}</td>}
+                  {hasCad && <td style={td}>{s.cadenceSpm || "—"}</td>}
+                  {hasCad && <td style={Object.assign({}, td, {color: late ? C.red : C.text})}>{s.strideM != null ? s.strideM.toFixed(2) : "—"}</td>}
+                  {hasGct && <td style={td}>{s.groundContactMs || "—"}</td>}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <div style={{fontFamily:"monospace",fontSize:9,color:C.muted,marginTop:6}}>이동 시간 기준 · 보폭 = 거리 ÷ 걸음 수 (워치 케이던스){dropKm ? " · 주황 배경 = 보폭 감소 구간" : ""}</div>
+      </div>
+    </div>
+  );
+}
+
 // ── 메인 앱 ───────────────────────────────────────────────────────────────────
 export default function App() {
   var _s = useState([]); var activities = _s[0], setActivities = _s[1];
@@ -625,6 +712,7 @@ export default function App() {
   var _ipf = useState(null); var icuProfile = _ipf[0], setIcuProfile = _ipf[1];
   var _slg = useState(function(){ try { return JSON.parse(localStorage.getItem("tlog_synclog") || "null"); } catch(e) { return null; } });
   var syncLog = _slg[0], setSyncLog = _slg[1];
+  var _spl = useState({}); var splitsById = _spl[0], setSplitsById = _spl[1]; // 활동별 구간 분석 (메모리 캐시)
   var _slo = useState(false); var syncLogOpen = _slo[0], setSyncLogOpen = _slo[1];
 
   // ── storage
@@ -940,6 +1028,24 @@ export default function App() {
     setRacePreset("custom"); setRaceKmInput(String(data.distanceKm));
     setManualEleGain("");
     showToast("코스 로드 완료 — "+data.distanceKm+"km ✓");
+  }
+
+  async function loadSplits(act) {
+    if (!act || !act.intervalsId) return;
+    if (!getSecret()) {
+      var s = window.prompt("Vercel에 넣은 YMC_SECRET 값을 입력하세요 (이 기기에 한 번만 저장돼요)");
+      if (!s) return;
+      setSecret(s.trim());
+    }
+    var key = act.intervalsId;
+    setSplitsById(function(m){ return Object.assign({}, m, {[key]: {loading:true}}); });
+    try {
+      var data = await fetchSplits(key);
+      setSplitsById(function(m){ return Object.assign({}, m, {[key]: {data:data}}); });
+    } catch(e) {
+      if (e instanceof UnauthorizedError) setSecret("");
+      setSplitsById(function(m){ return Object.assign({}, m, {[key]: {error: e.message || "불러오기 실패"}}); });
+    }
   }
 
   async function deleteActivity(id) {
@@ -1314,6 +1420,20 @@ export default function App() {
                 );
               })}
             </div>
+            {selected.intervalsId && (function(){
+              var st = splitsById[selected.intervalsId];
+              var isRideSel = selected.sport==="cycling"||selected.sport==="mtb";
+              if (st && st.data) return <SplitsPanel data={st.data} isRide={isRideSel} />;
+              return (
+                <div style={{marginTop:12}}>
+                  <button onClick={function(){loadSplits(selected);}} disabled={st&&st.loading}
+                    style={{width:"100%",background:"transparent",border:"1px solid "+C.accent,color:C.accent,padding:"10px 14px",cursor:st&&st.loading?"default":"pointer",fontFamily:"monospace",fontSize:12,letterSpacing:1}}>
+                    {st&&st.loading ? "구간 분석 불러오는 중…" : (isRideSel ? "📊 구간 · 심박 흐름 분석" : "📊 구간 · 심박 흐름 · 폼 변화 분석")}
+                  </button>
+                  {st&&st.error && <div style={{fontFamily:"monospace",fontSize:11,color:C.red,marginTop:6}}>{st.error}</div>}
+                </div>
+              );
+            })()}
           </div>
         )}
 

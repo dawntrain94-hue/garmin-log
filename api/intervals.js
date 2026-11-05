@@ -11,12 +11,14 @@
 //   GET /api/intervals?action=gpx&id=i123456789
 //   GET /api/intervals?action=wellness&oldest=2026-09-01&newest=2026-11-04
 //   GET /api/intervals?action=profile
+//   GET /api/intervals?action=splits&id=i123456789   (km별 구간·심박·케이던스·보폭·폼 변화)
 
 import { gzipSync } from 'node:zlib';
 import {
   DATE_RE, ID_RE, num, authHeader, resolveAthlete, upstreamMessage,
   toWellness, toSettings, slimGpx, icuGpxText, UpstreamError, normSecret, BASE,
 } from './_icu.js';
+import { loadActivitySplits, SplitsError } from './_activitySplits.js';
 
 export { slimGpx }; // re-exported for tests
 
@@ -142,7 +144,19 @@ export default async function handler(req, res) {
       return res.status(200).send(slim);
     }
 
-    return res.status(400).json({ error: 'action must be list, gpx, wellness or profile' });
+    if (action === 'splits') {
+      if (!ID_RE.test(id || '')) return res.status(400).json({ error: 'invalid id' });
+      try {
+        const r = await loadActivitySplits(id, req.query.split_km);
+        return res.status(200).json({ source: r.source, availableStreams: r.availableStreams, elevationNote: r.flat || null, ...r.result });
+      } catch (e) {
+        if (e instanceof SplitsError) return res.status(422).json({ error: e.message });
+        if (e instanceof UpstreamError) return res.status(502).json({ error: e.message, upstreamStatus: e.status });
+        throw e;
+      }
+    }
+
+    return res.status(400).json({ error: 'action must be list, gpx, wellness, profile or splits' });
   } catch (e) {
     return res.status(502).json({ error: String(e?.message || e) });
   }

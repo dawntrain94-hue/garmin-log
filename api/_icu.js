@@ -23,6 +23,9 @@ export function resolveAthlete() {
   return /^(0|i\d+)$/.test(athlete) ? athlete : null;
 }
 
+// "/athlete/<id>" 또는 null
+export function athletePathOrNull() { const a = resolveAthlete(); return a ? `/athlete/${a}` : null; }
+
 export const UPSTREAM_MSG = {
   401: 'Intervals.icu가 API 키를 거절했어요. INTERVALS_API_KEY를 확인해 주세요',
   403: 'Intervals.icu 접근이 거부됐어요. INTERVALS_ATHLETE_ID가 API 키 주인과 같은지 확인해 주세요',

@@ -65,6 +65,11 @@ export function fetchWellness(oldest, newest) {
   return call({ action: "wellness", oldest: oldest, newest: newest });
 }
 
+// km별 구간 분석 (페이스·심박·케이던스·보폭·접지 시간·폼 변화)
+export function fetchSplits(id) {
+  return call({ action: "splits", id: id });
+}
+
 export function fetchIntervalsProfile() {
   return call({ action: "profile" });
 }
