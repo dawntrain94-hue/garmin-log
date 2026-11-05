@@ -647,28 +647,52 @@ export function RacesPanel(props) {
         <div style={Object.assign(cardStyle(),{borderLeft:"3px solid "+C.gold})}>
           <div style={secTitle(C.gold)}>📊 지난 대회 — 예측 대비 실제</div>
           {past.map(function(r, i){
-            var rv = r.review, pr = rv.predictionAsOfRaceEve, rec = pr && recOf(pr.rows), pc = rv.pacing;
+            var rv = r.review, pr = rv.predictionAsOfRaceEve, rec = pr && pr.rows && recOf(pr.rows), pc = rv.pacing, a = rv.activity;
+            var isRide = r.sport==="cycling"||r.sport==="mtb";
+            var errCol = function(v, good){ return v==null ? C.text : (Math.abs(v)<=good ? C.accent : C.red); };
             return (
               <div key={r.eventId||i} style={{borderTop:i?"1px solid "+C.border:"none",paddingTop:i?10:0,marginTop:i?10:0}}>
                 <div style={{fontSize:14,fontWeight:700}}>{r.name} <span style={{fontFamily:"monospace",fontSize:10,color:C.muted}}>{fmtDate(r.date)} · {r.distanceKm||"?"}km</span></div>
-                {!rv.activity ? <div style={{fontFamily:"monospace",fontSize:11,color:C.muted}}>그날 기록된 활동을 찾지 못했어요</div> : (
+                {!a ? <div style={{fontFamily:"monospace",fontSize:11,color:C.muted}}>그날 기록된 활동을 찾지 못했어요</div> : (
                   <div style={{fontFamily:"monospace",fontSize:12,lineHeight:1.9,marginTop:4}}>
-                    <div>실제 <span style={{color:C.accent,fontWeight:700}}>{rv.activity.elapsed}</span>{rec ? <span> · 예측 {rec.predicted} · 오차 <span style={{color:Math.abs(rec.errorMin)<=5?C.accent:C.red,fontWeight:700}}>{rec.errorMin>0?"+":""}{rec.errorMin}분</span></span> : null}</div>
+                    <div>
+                      실제 <span style={{color:C.accent,fontWeight:700}}>{a.comparedOn==="moving" ? a.moving : (a.elapsed||a.moving)}</span>
+                      <span style={{color:C.muted,fontSize:10}}> {a.comparedOn==="moving" ? "이동 (경과 "+a.elapsed+")" : ""} · {a.km}km{isRide&&a.movingSpeedKmh ? " · "+a.movingSpeedKmh+"km/h" : ""}{!isRide&&a.movingPace ? " · "+a.movingPace+"/km" : ""}</span>
+                    </div>
+                    {rec && (
+                      <div>
+                        예측 {isRide ? (rec.predictedMoving||rec.predicted)+" (이동)" : rec.predicted}
+                        {rec.errorMin!=null
+                          ? <span> · 오차 <span style={{color:errCol(rec.errorMin,5),fontWeight:700}}>{rec.errorMin>0?"+":""}{rec.errorMin}분</span></span>
+                          : isRide && rec.speedErrorPct!=null
+                            ? <span> · 속도 {rec.predictedSpeedKmh}km/h 예측 대비 <span style={{color:errCol(rec.speedErrorPct,3),fontWeight:700}}>{rec.speedErrorPct>0?"+":""}{rec.speedErrorPct}%</span></span>
+                            : !isRide && rec.paceErrorPct!=null
+                              ? <span> · 페이스 {rec.predictedPace} 예측 대비 <span style={{color:errCol(rec.paceErrorPct,3),fontWeight:700}}>{rec.paceErrorPct>0?"+":""}{rec.paceErrorPct}%</span></span>
+                              : null}
+                      </div>
+                    )}
+                    {pr && pr.error && <div style={{fontSize:10,color:C.red}}>예측 계산 실패: {pr.error}</div>}
                     {pr && pr.closest && rec && pr.closest!==rec.label && <div style={{fontSize:10,color:C.muted}}>가장 가까웠던 예측: {pr.closest}</div>}
-                    {pc && !pc.error && (
+                    {pc && !pc.error && (isRide ? (pc.firstHalfSpeedKmh!=null && (
+                      <div style={{fontSize:11,color:"#a8b4c8"}}>
+                        전반 {pc.firstHalfSpeedKmh}km/h{pc.firstHalfPowerW ? " · "+pc.firstHalfPowerW+"W" : ""} → 후반 {pc.secondHalfSpeedKmh}km/h{pc.secondHalfPowerW ? " · "+pc.secondHalfPowerW+"W" : ""}
+                        {pc.aerobicDecouplingPct!=null && <span> · 디커플링 <span style={{color:pc.aerobicDecouplingPct>5?C.red:C.accent}}>{pc.aerobicDecouplingPct}%</span></span>}
+                      </div>
+                    )) : (pc.firstHalf && (
                       <div style={{fontSize:11,color:"#a8b4c8"}}>
                         전반 {pc.firstHalf} → 후반 {pc.secondHalf}
                         {pc.firstHalfVsRecommendedPct!=null && <span style={{color:pc.firstHalfVsRecommendedPct< -2?C.red:C.text}}> · 전반이 예측 페이스보다 {Math.abs(pc.firstHalfVsRecommendedPct)}% {pc.firstHalfVsRecommendedPct<0?"빠름":"느림"}</span>}
                         {pc.strideDropFromKm && <span> · 보폭 감소 {pc.strideDropFromKm}km~</span>}
                       </div>
-                    )}
+                    )))}
+                    {(rv.notes||[]).map(function(n, k){ return <div key={k} style={{fontSize:10,color:C.gold,lineHeight:1.6}}>⚠ {n}</div>; })}
                   </div>
                 )}
-                {r.warning && <div style={{fontFamily:"monospace",fontSize:10,color:C.gold}}>⚠ 획득고도 없음 — 트레일·사이클 예측 오차가 클 수 있어요</div>}
+                {r.warning && <div style={{fontFamily:"monospace",fontSize:10,color:C.gold}}>⚠ 캘린더에 획득고도가 없어서 오르막이 빠진 예측이에요 — 설명란에 "고도 1800"처럼 적어주세요</div>}
               </div>
             );
           })}
-          <div style={{fontFamily:"monospace",fontSize:9,color:C.muted,marginTop:8}}>예측은 대회 전날까지의 기록으로 다시 계산 · 역치는 현재 Intervals.icu 설정값 · 오차 + = 예측보다 느림</div>
+          <div style={{fontFamily:"monospace",fontSize:9,color:C.muted,marginTop:8}}>예측은 대회 전날까지의 기록으로 다시 계산 · 역치는 현재 Intervals.icu 설정값 · 오차 + = 예측보다 느림 · 사이클은 이동 시간끼리 비교</div>
         </div>
       )}
     </div>

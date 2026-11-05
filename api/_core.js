@@ -163,43 +163,93 @@ export function matchRaceActivity(race, acts) {
   return Math.abs(best.km - race.distanceKm) / race.distanceKm <= 0.2 ? best : null;
 }
 
+// "4h 27m" / "4:27:00" → 분
+function parseHm(v) {
+  const m = String(v || '').match(/^(\d+)h\s*(\d+)m$/);
+  return m ? +m[1] * 60 + +m[2] : parseClock(v);
+}
+
 export async function pastRaceReview(race, acts) {
   const act = matchRaceActivity(race, acts);
   if (!act) return { status: 'no matching activity found on the race date' };
-  const actualMin = act.elapsedMin || act.movingMin;
+  const isRide = race.sport === 'cycling' || race.sport === 'mtb';
+  const moving = act.movingMin || null, elapsed = act.elapsedMin || null;
+  // 기록 시간: 정지가 많지 않으면 경과 시간(대회 기록에 가까움), 정지·켜둔 시간이 길면 이동 시간 기준으로 비교
+  const stopHeavy = moving && elapsed && elapsed / moving > 1.15;
+  const actualMin = stopHeavy ? moving : (elapsed || moving);
+  const raceKm = race.distanceKm || act.km;
+  const distOffPct = race.distanceKm ? +((act.km / race.distanceKm - 1) * 100).toFixed(1) : 0;
+  const distMatches = Math.abs(distOffPct) <= 5;
+  const actualSpeed = moving ? act.km / (moving / 60) : null;           // km/h (이동)
+  const actualPace = moving ? moving / act.km : null;                    // min/km (이동)
   const out = {
-    activity: { id: act.id, date: act.date, name: act.name, km: act.km, elapsed: actualMin ? minText(actualMin) : null, moving: act.movingMin ? minText(act.movingMin) : null, avgHR: act.avgHR },
+    activity: {
+      id: act.id, date: act.date, name: act.name, km: act.km, avgHR: act.avgHR,
+      moving: moving ? minText(moving) : null, elapsed: elapsed ? minText(elapsed) : null,
+      comparedOn: stopHeavy ? 'moving' : 'elapsed',
+      movingSpeedKmh: isRide && actualSpeed ? +actualSpeed.toFixed(1) : undefined,
+      movingPace: !isRide && actualPace ? paceText(actualPace) : undefined,
+    },
+    notes: [],
   };
+  if (stopHeavy) out.notes.push(`경과 ${minText(elapsed)} 중 이동 ${minText(moving)} — 정지·켜둔 시간이 길어서 이동 시간 기준으로 비교`);
+  if (!distMatches) out.notes.push(`기록 거리 ${act.km}km ≠ 대회 거리 ${race.distanceKm}km (${distOffPct > 0 ? '+' : ''}${distOffPct}%) — 기록 일부가 빠졌거나 코스가 달라서 완주 시간 비교는 하지 않고 ${isRide ? '속도' : '페이스'}만 비교`);
+
   // 대회 전날까지의 데이터로 YMC 예측을 다시 계산 (그때 앱이 냈을 예측)
-  const km = race.distanceKm || act.km;
-  if (race.sport && km) {
+  if (race.sport && raceKm) {
     try {
-      const p = await runPrediction({ sport: race.sport, distance_km: km, elevation_gain_m: race.elevationGainM ?? undefined }, addDays(race.date, -1));
-      const rows = (p.prediction || []).map((x) => {
-        const m = parseClock(x.time);
-        return { label: x.label, recommended: x.recommended, predicted: x.time, errorMin: m && actualMin ? +(actualMin - m).toFixed(1) : null };
-      });
-      const withErr = rows.filter((x) => x.errorMin != null);
+      const p = await runPrediction({ sport: race.sport, distance_km: raceKm, elevation_gain_m: race.elevationGainM ?? undefined }, addDays(race.date, -1));
+      let rows;
+      if (isRide) {
+        rows = (p.cyclingPrediction || []).map((x) => {
+          const movMin = parseHm(x.movingTime), totMin = parseHm(x.time);
+          const predSpeed = movMin ? raceKm / (movMin / 60) : null;
+          return {
+            label: x.label, recommended: /추천/.test(x.label) || undefined,
+            predicted: totMin ? minText(totMin) : x.time, predictedMoving: movMin ? minText(movMin) : null,
+            predictedSpeedKmh: predSpeed ? +predSpeed.toFixed(1) : null,
+            errorMin: distMatches && movMin && moving ? +(moving - movMin).toFixed(1) : null, // 이동 시간끼리
+            speedErrorPct: predSpeed && actualSpeed ? +((actualSpeed / predSpeed - 1) * 100).toFixed(1) : null, // −면 예측보다 느림
+          };
+        });
+      } else {
+        rows = (p.prediction || []).map((x) => {
+          const m = parseClock(x.time), predPace = m ? m / raceKm : null;
+          return {
+            label: x.label, recommended: x.recommended, predicted: x.time, predictedPace: x.pace,
+            errorMin: distMatches && m && actualMin ? +(actualMin - m).toFixed(1) : null,
+            paceErrorPct: predPace && actualPace ? +((actualPace / predPace - 1) * 100).toFixed(1) : null, // +면 예측보다 느림
+          };
+        });
+      }
+      const key = (x) => (x.errorMin != null ? Math.abs(x.errorMin) : Math.abs(isRide ? x.speedErrorPct : x.paceErrorPct));
+      const scored = rows.filter((x) => key(x) != null && isFinite(key(x)));
       out.predictionAsOfRaceEve = {
         asOf: p.asOf, rows,
-        closest: withErr.length ? withErr.slice().sort((a, b) => Math.abs(a.errorMin) - Math.abs(b.errorMin))[0].label : null,
+        closest: scored.length ? scored.slice().sort((a, b) => key(a) - key(b))[0].label : null,
         readinessPct: p.readiness ? p.readiness.scorePct : null,
         durability: p.durability ? p.durability.label : null,
-        note: 'errorMin = actual − predicted (+ means slower than predicted). Thresholds are today\'s Intervals.icu settings, not the ones on race day.',
+        note: isRide
+          ? 'errorMin = actual moving − predicted moving (+ = slower); speedErrorPct = actual vs predicted moving speed (− = slower). Thresholds are today\'s Intervals.icu settings.'
+          : 'errorMin = actual − predicted (+ = slower); paceErrorPct = actual vs predicted pace (+ = slower). Thresholds are today\'s Intervals.icu settings.',
       };
       const rec = rows.find((x) => x.recommended);
-      if (rec) {
-        const recPace = parseClock(rec.predicted) / km;
-        out.predictionAsOfRaceEve.recommendedPace = paceText(recPace);
-        out._recPace = recPace;
-      }
+      if (rec && !isRide) out._recPace = parseClock(rec.predicted) / raceKm;
+      if (rec && isRide) out._recSpeed = rec.predictedSpeedKmh;
     } catch (e) { out.predictionAsOfRaceEve = { error: e.message || String(e) }; }
   }
-  // 페이스 운영: 전·후반, 폼 변화
+
+  // 페이스 운영: 전·후반, 심박 흐름, (러닝) 폼 변화
   try {
     const { result } = await loadActivitySplits(act.id);
     const h = result.halves, fc = result.formChange;
-    out.pacing = {
+    out.pacing = isRide ? {
+      firstHalfSpeedKmh: h.first.speedKmh, secondHalfSpeedKmh: h.second.speedKmh,
+      firstHalfPowerW: h.first.avgPower, secondHalfPowerW: h.second.avgPower,
+      firstHalfVsRecommendedPct: out._recSpeed && h.first.speedKmh ? +((h.first.speedKmh / out._recSpeed - 1) * 100).toFixed(1) : undefined,
+      hrDriftBpm: h.hrDriftBpm, aerobicDecouplingPct: h.aerobicDecouplingPct, decouplingBasis: h.basis,
+      note: 'speeds are moving speeds; firstHalfVsRecommendedPct > 0 means the first half was faster than the recommended prediction',
+    } : {
       firstHalf: h.first.paceMinKm ? paceText(h.first.paceMinKm) : undefined, secondHalf: h.second.paceMinKm ? paceText(h.second.paceMinKm) : undefined,
       firstHalfVsRecommendedPct: out._recPace && h.first.paceMinKm ? +((h.first.paceMinKm / out._recPace - 1) * 100).toFixed(1) : undefined,
       hrDriftBpm: h.hrDriftBpm, aerobicDecouplingPct: h.aerobicDecouplingPct,
@@ -208,7 +258,8 @@ export async function pastRaceReview(race, acts) {
       note: 'firstHalfVsRecommendedPct < 0 means the first half was faster than the recommended predicted pace',
     };
   } catch (e) { out.pacing = { error: e.message || String(e) }; }
-  delete out._recPace;
+  delete out._recPace; delete out._recSpeed;
+  if (!out.notes.length) delete out.notes;
   return out;
 }
 
