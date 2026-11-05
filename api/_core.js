@@ -299,7 +299,7 @@ export async function runPrediction(args, asOf) {
   const usable = acts.filter((a) => !a.dataUnavailable && SPORT_OF[a.type] && a.km > 0 && a.date <= today);
   const ymcActs = usable.sort((a, b) => String(b.start).localeCompare(String(a.start))).map((a) => ({
     id: a.id, sport: SPORT_OF[a.type], activityDate: a.date, name: a.name,
-    distanceKm: a.km, durationMin: a.movingMin || 0,
+    distanceKm: a.km, durationMin: a.movingMin || 0, movingMin: a.movingMin || 0,
     avgPaceMinKm: a.km && a.movingMin ? +(a.movingMin / a.km).toFixed(2) : 0,
     avgHR: a.avgHR, elevationGain: a.elevationGain || 0, avgPower: a.avgPower, normalizedPower: a.normalizedPower,
   }));
@@ -346,6 +346,7 @@ export async function runPrediction(args, asOf) {
     asOf: today,
     race: { sport, distanceKm: raceKm, elevationGainM: gain ?? undefined },
     prediction: (r.runningRows || []).map((x) => ({ label: x.label, recommended: x.isRecommended || undefined, pace: paceText(x.paceMinKm), time: minText(x.totalMin), basis: x.desc })),
+    cyclingSpeedCalibration: r.cyclingRows && r.cyclingRows.speedCalib ? { ...r.cyclingRows.speedCalib, meaning: 'actual ÷ model moving time on recent rides (median); applied to every cycling row' } : undefined,
     cyclingPrediction: r.cyclingRows ? r.cyclingRows.map((x) => ({ label: x.label, power: x.power, intensityFactor: x.if_val, avgSpeedKmh: x.speed, time: x.time, movingTime: x.movTime, basis: x.desc })) : undefined,
     goal,
     readiness: r.trainingReadiness ? { scorePct: r.trainingReadiness.score, level: r.trainingReadiness.level, goods: r.trainingReadiness.goods, warnings: r.trainingReadiness.warnings, notes: r.trainingReadiness.details } : null,

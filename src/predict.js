@@ -48,7 +48,30 @@ export function formatPace(p) {
 }
 
 // ── 사이클링 물리 시뮬레이션 ──────────────────────────────────────────────────
-export function calcCyclingTime(ftp, distKm, eleGain, weightKg, elevProfile, customZones) {
+// 코스 GPX 없이 획득고도만 있을 때 쓰는 가상 고도 프로필.
+// 예전엔 획득고도를 전 구간 '평균 경사 오르막'으로 계산해서 내리막 이득이 통째로 빠졌음.
+// 그란폰도 코스처럼 오른 만큼 내려온다고 보고, 평균 5% 오르막 → 같은 길이 내리막을
+// 언덕 여러 개로 나눠 평지 사이에 배치 (오르막+내리막은 최대 코스의 70%).
+export function synthElevProfile(distKm, eleGain) {
+  var dist = parseFloat(distKm), gain = parseFloat(eleGain);
+  if (!(dist > 0) || !(gain > 0)) return null;
+  var climbKm = Math.min(gain / 1000 / 0.05, dist * 0.35);
+  var grade = gain / (climbKm * 1000);
+  var hills = Math.max(1, Math.min(8, Math.round(gain / 300)));
+  var n = 240, step = dist / n, flatKm = dist - climbKm * 2;
+  var hillKm = climbKm / hills, gapKm = flatKm / (hills + 1);
+  var pts = [], ele = 0;
+  for (var i = 0; i <= n; i++) {
+    pts.push(ele);
+    var x = i * step, period = gapKm + hillKm * 2, pos = x % period;
+    var inHill = Math.floor(x / period) < hills && pos >= gapKm;
+    if (inHill) ele += (pos - gapKm < hillKm ? 1 : -1) * grade * step * 1000;
+  }
+  return pts;
+}
+
+export function calcCyclingTime(ftp, distKm, eleGain, weightKg, elevProfile, customZones, speedCalib) {
+  if ((!elevProfile || elevProfile.length < 2) && eleGain && parseFloat(eleGain) > 0) elevProfile = synthElevProfile(distKm, eleGain);
   if (!ftp || !distKm) return null;
   var ftpW = parseFloat(ftp), dist = parseFloat(distKm);
   var kg = (parseFloat(weightKg)||70)+8, g = 9.81, CdA = 0.38, rho = 1.1, Crr = 0.004;
@@ -126,6 +149,7 @@ export function calcCyclingTime(ftp, distKm, eleGain, weightKg, elevProfile, cus
       spd = Math.max(12, Math.min(spd,35));
       totalTimeSec = dist/spd*3600;
     }
+    if (speedCalib > 0) totalTimeSec *= speedCalib; // 개인 보정 (실제 이동 시간 ÷ 모델 이동 시간)
     var stopTimeSec = (dist/100)*10*60;
     totalTimeSec += stopTimeSec;
     var movingSec = totalTimeSec - stopTimeSec;
@@ -672,7 +696,19 @@ export function predictRace(input) {
         // 훈련 데이터 없으면 기본 고정 존
         zones = null;
       }
-      cyclingRows = calcCyclingTime(profile.ftp, effectiveCourseData.distanceKm, effectiveEleGain, profile.weight, effectiveCourseData.elevProfile, zones);
+      // 개인 속도 보정: 최근 라이딩마다 '그 라이딩의 NP로 모델이 계산한 이동 시간'과 실제 이동 시간을 비교한 중앙값
+      // (공기저항·체중 기본값이 나와 맞지 않거나 파워 측정이 낮게 잡히는 차이를 자동으로 흡수)
+      var calibRatios = fitnessActs.filter(function(a){ return effPower(a) > 0 && a.distanceKm >= 15; }).map(function(a){
+        var mov = a.movingMin || (a.distanceKm > 0 && a.avgPaceMinKm > 0 ? a.distanceKm * a.avgPaceMinKm : 0);
+        if (!(mov >= 30)) return null;
+        var r = calcCyclingTime(profile.ftp, a.distanceKm, a.elevationGain || 0, profile.weight, null, [{label:"", pct: effPower(a)/ftpN, desc:""}])[0];
+        var modelMov = r.timeHours * 60 - (a.distanceKm/100) * 10;
+        return modelMov > 0 ? mov / modelMov : null;
+      }).filter(function(x){ return x > 0; }).sort(function(x,y){ return x-y; });
+      var speedCalib = calibRatios.length >= 2 ? Math.min(1.2, Math.max(0.7, calibRatios[Math.floor(calibRatios.length/2)])) : null;
+      if (speedCalib && zones) zones.forEach(function(z){ if (z.desc === trainingIFLabel) z.desc += " · 개인 속도 보정 ×" + speedCalib.toFixed(2) + " (최근 라이딩 " + calibRatios.length + "회)"; });
+      cyclingRows = calcCyclingTime(profile.ftp, effectiveCourseData.distanceKm, effectiveEleGain, profile.weight, effectiveCourseData.elevProfile, zones, speedCalib);
+      if (cyclingRows) cyclingRows.speedCalib = speedCalib ? { factor: +speedCalib.toFixed(3), rides: calibRatios.length } : null;
     }
 
     // 러닝
