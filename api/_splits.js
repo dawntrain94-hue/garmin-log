@@ -12,11 +12,12 @@ const r1 = (v) => (v == null || !isFinite(v) ? null : Math.round(v * 10) / 10);
 const r2 = (v) => (v == null || !isFinite(v) ? null : Math.round(v * 100) / 100);
 
 // 시간 가중 평균용 누적기
-function acc() { return { time: 0, dist: 0, hrT: 0, hrW: 0, hrMax: null, wT: 0, wW: 0, up: 0, down: 0 }; }
+function acc() { return { time: 0, dist: 0, hrT: 0, hrW: 0, hrMax: null, wT: 0, wW: 0, cT: 0, cW: 0, cD: 0, up: 0, down: 0 }; }
 function add(a, seg) {
   a.time += seg.dt; a.dist += seg.dd;
   if (seg.hr != null) { a.hrT += seg.dt; a.hrW += seg.hr * seg.dt; a.hrMax = Math.max(a.hrMax || 0, seg.hr); }
   if (seg.w != null) { a.wT += seg.dt; a.wW += seg.w * seg.dt; }
+  if (seg.cad != null) { a.cT += seg.dt; a.cW += seg.cad * seg.dt; a.cD += seg.dd; } // 케이던스 있는 구간의 시간·거리
   if (seg.dAlt > 0) a.up += seg.dAlt; else a.down -= seg.dAlt;
 }
 function out(a, isRide) {
@@ -30,7 +31,15 @@ function out(a, isRide) {
     maxHR: a.hrMax != null ? Math.round(a.hrMax) : null,
     avgPower: a.wT ? Math.round(a.wW / a.wT) : undefined,
     elevGain: Math.round(a.up), elevLoss: Math.round(a.down),
+    ...(isRide ? {} : runDyn(a)),
   };
+}
+
+// 러닝: 평균 케이던스(spm)와 보폭(m/걸음) — 보폭 = 이동 거리 ÷ 걸음 수 (워치 케이던스만으로 계산)
+function runDyn(a) {
+  if (!a.cT) return {};
+  const cad = a.cW / a.cT, steps = cad * a.cT / 60;
+  return { cadenceSpm: Math.round(cad), strideM: steps > 0 ? r2(a.cD / steps) : null };
 }
 
 // 고도 잡음 줄이기: 5포인트 이동평균 후, 1m 이상 변할 때만 반영
@@ -58,6 +67,9 @@ export function analyzeSplits(samples, opts = {}) {
   if (!samples || samples.length < 30) return null;
   // 트랙·트레드밀·실내는 평지: 고도 잡음을 무시
   const alt = opts.flat ? samples.map(() => null) : smoothAlt(samples);
+  // Garmin은 러닝 케이던스를 한쪽 다리 기준(예: 85)으로 저장하기도 함 → 중앙값이 120 미만이면 ×2
+  const cads = isRide ? [] : samples.map((s) => s.cad).filter((c) => c > 20).sort((x, y) => x - y);
+  const cadMult = cads.length && cads[Math.floor(cads.length / 2)] < 120 ? 2 : 1;
 
   // 구간(segment) 목록
   const segs = [];
@@ -65,7 +77,7 @@ export function analyzeSplits(samples, opts = {}) {
     const a = samples[i - 1], b = samples[i];
     const dt = b.t - a.t, dd = Math.max(0, b.d - a.d);
     if (!(dt > 0) || dt > MAX_GAP_S || dd / dt < minSpeed) continue;
-    segs.push({ dt, dd, d: b.d, hr: b.hr ?? a.hr ?? null, w: b.w ?? null, dAlt: alt[i] != null && alt[i - 1] != null ? alt[i] - alt[i - 1] : 0 });
+    segs.push({ dt, dd, d: b.d, hr: b.hr ?? a.hr ?? null, w: b.w ?? null, cad: !isRide && b.cad > 0 ? b.cad * cadMult : null, dAlt: alt[i] != null && alt[i - 1] != null ? alt[i] - alt[i - 1] : 0 });
   }
   if (!segs.length) return null;
 
@@ -116,7 +128,49 @@ export function analyzeSplits(samples, opts = {}) {
                   : { first3PaceMinKm: r2(a), last3PaceMinKm: r2(b), changePct: r1((b - a) / a * 100) }; // 러닝: +면 느려짐
   }
 
-  return { totals: out(total, isRide), splits, halves, fade, hrZones };
+  const formChange = isRide ? null : analyzeForm(full, halves);
+  return { totals: out(total, isRide), splits, halves, fade, hrZones, formChange };
+}
+
+// 폼 변화: 속도 = 케이던스 × 보폭 이므로 페이스 변화를 둘로 나눔 (ln 비율 기준)
+//  - peak: 가장 빨랐던 연속 3구간, last: 마지막 3구간
+//  - strideDropFromKm: 피크 이후 보폭이 피크 대비 3% 넘게 줄어든 상태가 끝까지(또는 3구간 연속) 이어진 첫 구간
+function analyzeForm(full, halves) {
+  const ok = full.filter((s) => s.cadenceSpm && s.strideM);
+  if (ok.length < 6) return null;
+  const speed = (s) => 1 / s.paceMinKm;
+  const avg = (arr, f) => mean(arr.map(f));
+  let pi = 0, best = -1;
+  for (let i = 0; i + 3 <= ok.length; i++) { const v = avg(ok.slice(i, i + 3), speed); if (v > best) { best = v; pi = i; } }
+  const peak = ok.slice(pi, pi + 3), last = ok.slice(-3);
+  const split = (A, B) => {
+    const dv = Math.log(avg(B, speed) / avg(A, speed));
+    const dc = Math.log(avg(B, (s) => s.cadenceSpm) / avg(A, (s) => s.cadenceSpm));
+    const ds = Math.log(avg(B, (s) => s.strideM) / avg(A, (s) => s.strideM));
+    return {
+      speedChangePct: r1((Math.exp(dv) - 1) * 100),
+      cadenceChangePct: r1((Math.exp(dc) - 1) * 100),
+      strideChangePct: r1((Math.exp(ds) - 1) * 100),
+      // 속도 변화 중 보폭이 차지한 몫 (%). 100에 가까우면 보폭이 줄어서 느려진 것
+      strideSharePct: Math.abs(dv) > 0.005 ? Math.round(ds / dv * 100) : null,
+    };
+  };
+  const peakStride = avg(peak, (s) => s.strideM), peakCad = avg(peak, (s) => s.cadenceSpm);
+  let strideDropFromKm = null;
+  const after = ok.slice(pi + 3);
+  for (let i = 0; i < after.length; i++) {
+    const rest = after.slice(i, Math.min(after.length, i + 3));
+    if (rest.length >= Math.min(3, after.length - i) && rest.every((s) => s.strideM < peakStride * 0.97)) { strideDropFromKm = after[i].split; break; }
+  }
+  const h1 = halves.first, h2 = halves.second;
+  return {
+    peak: { splits: `${peak[0].split}-${peak[2].split}`, paceMinKm: r2(1 / avg(peak, speed)), cadenceSpm: Math.round(peakCad), strideM: r2(peakStride) },
+    last3: { splits: `${last[0].split}-${last[2].split}`, paceMinKm: r2(1 / avg(last, speed)), cadenceSpm: Math.round(avg(last, (s) => s.cadenceSpm)), strideM: r2(avg(last, (s) => s.strideM)) },
+    peakToLast: split(peak, last),
+    strideDropFromKm,
+    halves: h1.cadenceSpm && h2.cadenceSpm ? { firstCadenceSpm: h1.cadenceSpm, secondCadenceSpm: h2.cadenceSpm, firstStrideM: h1.strideM, secondStrideM: h2.strideM } : undefined,
+    basis: 'speed = cadence × stride; stride = distance ÷ steps from the watch cadence (no chest strap needed). strideSharePct = how much of the speed change came from stride length.',
+  };
 }
 
 // Intervals.icu streams.json ([{type, data}] 또는 {type: data}) → samples
@@ -127,12 +181,13 @@ export function samplesFromStreams(streams) {
   const pick = (...names) => { for (const n of names) if (map[n]) return map[n]; return null; };
   const time = pick('time'), dist = pick('distance');
   if (!time || !dist) return null;
-  const hr = pick('heartrate', 'heart_rate', 'hr'), w = pick('watts', 'power'), alt = pick('altitude', 'fixed_altitude', 'enhanced_altitude');
+  const hr = pick('heartrate', 'heart_rate', 'hr'), w = pick('watts', 'power'), alt = pick('altitude', 'fixed_altitude', 'enhanced_altitude'), cad = pick('cadence');
   const n = Math.min(time.length, dist.length), out = [];
   for (let i = 0; i < n; i++) {
     if (time[i] == null || dist[i] == null) continue;
-    out.push({ t: +time[i], d: +dist[i], hr: hr && hr[i] > 30 ? +hr[i] : null, w: w && w[i] != null ? +w[i] : null, alt: alt && alt[i] != null ? +alt[i] : null });
+    out.push({ t: +time[i], d: +dist[i], hr: hr && hr[i] > 30 ? +hr[i] : null, w: w && w[i] != null ? +w[i] : null, alt: alt && alt[i] != null ? +alt[i] : null, cad: cad && cad[i] > 0 ? +cad[i] : null });
   }
+  if (out.length) out.streamTypes = Object.keys(map).sort();
   return out.length ? out : null;
 }
 
@@ -150,8 +205,8 @@ export function samplesFromGpx(text) {
     if (t0 == null) t0 = ts;
     if (prev) d += haversine(prev[0], prev[1], lat, lon);
     prev = [lat, lon];
-    const hr = parseFloat(tag(inner, 'hr|heartrate')), w = parseFloat(tag(inner, 'power|watts')), alt = parseFloat(tag(inner, 'ele'));
-    out.push({ t: ts - t0, d, hr: hr > 30 ? hr : null, w: isFinite(w) ? w : null, alt: isFinite(alt) ? alt : null });
+    const hr = parseFloat(tag(inner, 'hr|heartrate')), w = parseFloat(tag(inner, 'power|watts')), alt = parseFloat(tag(inner, 'ele')), cad = parseFloat(tag(inner, 'cad|cadence'));
+    out.push({ t: ts - t0, d, hr: hr > 30 ? hr : null, w: isFinite(w) ? w : null, alt: isFinite(alt) ? alt : null, cad: cad > 0 ? cad : null });
   }
   return out.length ? out : null;
 }
