@@ -245,6 +245,8 @@ export async function pastRaceReview(race, acts) {
           ? 'errorMin = actual moving − predicted moving (+ = slower); speedErrorPct = actual vs predicted moving speed (− = slower). Thresholds are today\'s Intervals.icu settings.'
           : 'errorMin = actual − predicted (+ = slower); paceErrorPct = actual vs predicted pace (+ = slower). Thresholds are today\'s Intervals.icu settings.',
       };
+      // 사이클 기본표(훈련 IF 없음)는 '추천' 표시가 없음 → 앱과 같이 두 번째 줄(Z2 중간, 실전 검증 IF 0.68)을 기준으로
+      if (isRide && rows.length && !rows.some((x) => x.recommended)) rows[Math.min(1, rows.length - 1)].recommended = true;
       const rec = rows.find((x) => x.recommended);
       if (rec && !isRide) out._recPace = parseClock(rec.predicted) / raceKm;
       if (rec && isRide) out._recSpeed = rec.predictedSpeedKmh;
@@ -299,7 +301,7 @@ export async function runPrediction(args, asOf) {
     id: a.id, sport: SPORT_OF[a.type], activityDate: a.date, name: a.name,
     distanceKm: a.km, durationMin: a.movingMin || 0,
     avgPaceMinKm: a.km && a.movingMin ? +(a.movingMin / a.km).toFixed(2) : 0,
-    avgHR: a.avgHR, elevationGain: a.elevationGain || 0, avgPower: a.avgPower,
+    avgHR: a.avgHR, elevationGain: a.elevationGain || 0, avgPower: a.avgPower, normalizedPower: a.normalizedPower,
   }));
 
   // 사이클 목표면 파워 상세(30초 bins)를 읽어서 지속 고강도 시간 평가에 사용

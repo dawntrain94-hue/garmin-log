@@ -3,7 +3,7 @@
 //
 // input:
 //   activities  YMC 활동 배열 (최신순). 필드: sport(road_run|trail_run|cycling|mtb), distanceKm, durationMin,
-//               avgPaceMinKm, avgHR, elevationGain, activityDate(YYYY-MM-DD), avgPower, powerBins
+//               avgPaceMinKm, avgHR, elevationGain, activityDate(YYYY-MM-DD), avgPower, normalizedPower(선택), powerBins
 //   profile     { ltPaceMinKm, ltHR, maxHR, ftp, weight, vdot, age, gender } (문자열/숫자 모두 가능)
 //   wellness    [{ date, hrv, restingHR, sleepHours, ... }] (computeWellnessStatus 입력)
 //   sport       목표 종목, raceKm 목표 거리
@@ -14,7 +14,11 @@
 //        trainingReadiness, wellnessStatus, sport, hasCourse, courseData, effectiveEleGain }
 
 import { computeWellnessStatus } from "./wellness.js";
-import { sustainedMinutes } from "./intensity.js";
+import { sustainedMinutes, normalizedPowerFromBins } from "./intensity.js";
+
+// 사이클 강도용 파워: NP(정규화 파워) 우선 — 없으면 30초 bins로 근사 — 그래도 없으면 평균 파워
+function effPower(a) { return a.normalizedPower || normalizedPowerFromBins(a.powerBins) || a.avgPower || 0; }
+function usesNP(a) { return !!(a.normalizedPower || normalizedPowerFromBins(a.powerBins)); }
 
 export function calcVDOT(distKm, timeMin) {
   var v = (distKm * 1000) / timeMin; // m/min
@@ -432,7 +436,7 @@ export function predictRace(input) {
             else                   { score += 5;  warnings.push("고강도 부족 — " + ssLabel + ". 오르막에서 8~15분 × 2~3회 또는 5분 블록 여러 번으로 누적해도 돼요"); }
             if (binActsR.length < pwrActsR.length) details.push("파워 상세 있는 라이딩 " + binActsR.length + "/" + pwrActsR.length + "개 기준 — 나머지는 기간 SYNC 시 자동 보완");
           } else if (pwrActsR.length >= 2) {
-            var avgPwrR = pwrActsR.reduce(function(a,b){return a+b.avgPower;},0)/pwrActsR.length;
+            var avgPwrR = pwrActsR.reduce(function(a,b){return a+effPower(b);},0)/pwrActsR.length;
             var ifR = avgPwrR/parseFloat(profile.ftp);
             if (ifR >= 0.65)      { score += 25; goods.push("훈련 강도 적절 — 평균 IF "+ifR.toFixed(2)); }
             else if (ifR >= 0.55) { score += 15; details.push("훈련 강도 보통 — 평균 IF "+ifR.toFixed(2)); }
@@ -612,9 +616,10 @@ export function predictRace(input) {
       if (pwrActs.length >= 2) {
         var longPwrActs = pwrActs.filter(function(a){return a.distanceKm>=raceKm*0.3;});
         var basePwrActs = longPwrActs.length >= 1 ? longPwrActs : pwrActs;
-        var avgPwr = basePwrActs.reduce(function(a,b){return a+b.avgPower;},0)/basePwrActs.length;
+        var avgPwr = basePwrActs.reduce(function(a,b){return a+effPower(b);},0)/basePwrActs.length;
+        var npUsed = basePwrActs.some(usesNP);
         trainingIF = +(avgPwr/ftpN).toFixed(2);
-        trainingIFLabel = (longPwrActs.length>=1?"장거리":"평균")+" 실측 IF "+trainingIF+" ("+fitnessWindowLabel+") · 파워계";
+        trainingIFLabel = (longPwrActs.length>=1?"장거리":"평균")+" 실측 IF "+trainingIF+" ("+fitnessWindowLabel+") · 파워계"+(npUsed?" NP 기준":" 평균 파워 기준");
       }
 
       // ② 파워 없을 때: 훈련 볼륨과 컨디션 기반으로 기본 IF 범위 조정

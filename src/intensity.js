@@ -29,6 +29,16 @@ export function buildPowerBins(series) {
   return moving >= 600 ? bins : null; // 파워 기록 10분 미만이면 의미 없음
 }
 
+// 30초 평균 파워로 NP(정규화 파워) 근사: (평균(P⁴))^¼ — 내리막·신호 대기 0W 때문에
+// 평균 파워가 실제 부하보다 크게 낮아지는 걸 보정 (IF = NP ÷ FTP)
+export function normalizedPowerFromBins(bins) {
+  if (!bins) return null;
+  var v = bins.filter(function (b) { return b !== GAP && b >= 0; });
+  if (v.length < 20) return null;
+  var m4 = v.reduce(function (s, b) { return s + Math.pow(b, 4); }, 0) / v.length;
+  return Math.round(Math.pow(m4, 0.25));
+}
+
 // FTP × fraction 이상이 minMinutes 이상 이어진 구간의 누적 시간(분)
 export function sustainedMinutes(bins, ftp, fraction, minMinutes) {
   if (!bins || !(ftp > 0)) return 0;
