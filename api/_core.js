@@ -137,7 +137,7 @@ export function eventGoal(e) {
 // 설명란의 획득고도: "고도 1300", "획득고도 1,300m", "D+1300", "1300m↑"
 export function eventGain(e) {
   const t = String(e.description || '').replace(/(\d),(\d{3})/g, '$1$2');
-  const m = t.match(/(?:획득\s*고도|상승\s*고도|고도|D\+)\s*[:：]?\s*(\d{2,5})/i) || t.match(/(\d{2,5})\s*m\s*(?:↑|상승)/);
+  const m = t.match(/(?:획득\s*고도|상승\s*고도|누적\s*고도|고도|상승|elevation|ascent|gain|D\+)\s*[:：]?\s*(\d{2,5})/i) || t.match(/(\d{2,5})\s*m\s*(?:↑|상승|획득)/);
   return m ? parseInt(m[1], 10) : null;
 }
 // 설명란의 공식 기록: "기록 5:18:48", "공식기록 5:18:48", "result 5:18:48" ("목표 기록"은 제외)

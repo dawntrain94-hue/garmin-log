@@ -653,6 +653,10 @@ export function RacesPanel(props) {
             return (
               <div key={r.eventId||i} style={{borderTop:i?"1px solid "+C.border:"none",paddingTop:i?10:0,marginTop:i?10:0}}>
                 <div style={{fontSize:14,fontWeight:700}}>{r.name} <span style={{fontFamily:"monospace",fontSize:10,color:C.muted}}>{fmtDate(r.date)} · {r.distanceKm||"?"}km</span></div>
+                <div style={{fontFamily:"monospace",fontSize:10,color:C.muted}}>
+                  캘린더 설명란: 공식 기록 <span style={{color:r.officialTime?C.accent:C.muted}}>{r.officialTime ? "✓ "+r.officialTime : "없음"}</span>
+                  {" · "}고도 <span style={{color:r.elevationGainM!=null?C.accent:C.muted}}>{r.elevationGainM!=null ? "✓ "+r.elevationGainM.toLocaleString()+"m" : "없음"}</span>
+                </div>
                 {!a ? <div style={{fontFamily:"monospace",fontSize:11,color:C.muted}}>그날 기록된 활동을 찾지 못했어요</div> : (
                   <div style={{fontFamily:"monospace",fontSize:12,lineHeight:1.9,marginTop:4}}>
                     <div>
