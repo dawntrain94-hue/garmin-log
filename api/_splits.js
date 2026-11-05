@@ -12,12 +12,13 @@ const r1 = (v) => (v == null || !isFinite(v) ? null : Math.round(v * 10) / 10);
 const r2 = (v) => (v == null || !isFinite(v) ? null : Math.round(v * 100) / 100);
 
 // 시간 가중 평균용 누적기
-function acc() { return { time: 0, dist: 0, hrT: 0, hrW: 0, hrMax: null, wT: 0, wW: 0, cT: 0, cW: 0, cD: 0, up: 0, down: 0 }; }
+function acc() { return { time: 0, dist: 0, hrT: 0, hrW: 0, hrMax: null, wT: 0, wW: 0, cT: 0, cW: 0, cD: 0, dyn: {}, up: 0, down: 0 }; }
 function add(a, seg) {
   a.time += seg.dt; a.dist += seg.dd;
   if (seg.hr != null) { a.hrT += seg.dt; a.hrW += seg.hr * seg.dt; a.hrMax = Math.max(a.hrMax || 0, seg.hr); }
   if (seg.w != null) { a.wT += seg.dt; a.wW += seg.w * seg.dt; }
   if (seg.cad != null) { a.cT += seg.dt; a.cW += seg.cad * seg.dt; a.cD += seg.dd; } // 케이던스 있는 구간의 시간·거리
+  if (seg.dyn) for (const k in seg.dyn) { const v = seg.dyn[k]; if (v == null) continue; const d = (a.dyn[k] ||= { t: 0, w: 0 }); d.t += seg.dt; d.w += v * seg.dt; }
   if (seg.dAlt > 0) a.up += seg.dAlt; else a.down -= seg.dAlt;
 }
 function out(a, isRide) {
@@ -39,7 +40,23 @@ function out(a, isRide) {
 function runDyn(a) {
   if (!a.cT) return {};
   const cad = a.cW / a.cT, steps = cad * a.cT / 60;
-  return { cadenceSpm: Math.round(cad), strideM: steps > 0 ? r2(a.cD / steps) : null };
+  const o = { cadenceSpm: Math.round(cad), strideM: steps > 0 ? r2(a.cD / steps) : null };
+  const dm = (k) => (a.dyn[k] && a.dyn[k].t ? a.dyn[k].w / a.dyn[k].t : null);
+  if (dm('gct') != null) o.groundContactMs = Math.round(dm('gct'));
+  if (dm('vo') != null) o.verticalOscCm = r1(dm('vo'));
+  if (dm('vr') != null) o.verticalRatioPct = r1(dm('vr'));
+  return o;
+}
+
+// 워치 러닝 다이내믹스 스트림 단위 정리 (Intervals.icu가 넘겨주는 값의 크기로 판단)
+//  stance_time: 접지 시간 ms / vertical_oscillation: mm 또는 cm → cm / vertical_ratio: %
+function dynScale(name, arr) {
+  const v = arr.filter((x) => x > 0).sort((x, y) => x - y);
+  if (!v.length) return null;
+  const med = v[Math.floor(v.length / 2)];
+  if (name === 'vo') return med > 30 ? 0.1 : 1;     // 60~120mm → cm
+  if (name === 'gct') return med < 5 ? 1000 : 1;    // 0.25s → ms
+  return 1;
 }
 
 // 고도 잡음 줄이기: 5포인트 이동평균 후, 1m 이상 변할 때만 반영
@@ -70,6 +87,9 @@ export function analyzeSplits(samples, opts = {}) {
   // Garmin은 러닝 케이던스를 한쪽 다리 기준(예: 85)으로 저장하기도 함 → 중앙값이 120 미만이면 ×2
   const cads = isRide ? [] : samples.map((s) => s.cad).filter((c) => c > 20).sort((x, y) => x - y);
   const cadMult = cads.length && cads[Math.floor(cads.length / 2)] < 120 ? 2 : 1;
+  const scales = {};
+  for (const k of ['gct', 'vo', 'vr']) { const arr = samples.map((x) => x.dyn && x.dyn[k]).filter((x) => x > 0); if (arr.length) scales[k] = dynScale(k, arr); }
+  const scaleDyn = (d) => { const o = {}; for (const k in scales) o[k] = d[k] > 0 ? d[k] * scales[k] : null; return o; };
 
   // 구간(segment) 목록
   const segs = [];
@@ -77,7 +97,7 @@ export function analyzeSplits(samples, opts = {}) {
     const a = samples[i - 1], b = samples[i];
     const dt = b.t - a.t, dd = Math.max(0, b.d - a.d);
     if (!(dt > 0) || dt > MAX_GAP_S || dd / dt < minSpeed) continue;
-    segs.push({ dt, dd, d: b.d, hr: b.hr ?? a.hr ?? null, w: b.w ?? null, cad: !isRide && b.cad > 0 ? b.cad * cadMult : null, dAlt: alt[i] != null && alt[i - 1] != null ? alt[i] - alt[i - 1] : 0 });
+    segs.push({ dt, dd, d: b.d, hr: b.hr ?? a.hr ?? null, w: b.w ?? null, cad: !isRide && b.cad > 0 ? b.cad * cadMult : null, dyn: isRide || !b.dyn ? null : scaleDyn(b.dyn), dAlt: alt[i] != null && alt[i - 1] != null ? alt[i] - alt[i - 1] : 0 });
   }
   if (!segs.length) return null;
 
@@ -162,14 +182,22 @@ function analyzeForm(full, halves) {
     const rest = after.slice(i, Math.min(after.length, i + 3));
     if (rest.length >= Math.min(3, after.length - i) && rest.every((s) => s.strideM < peakStride * 0.97)) { strideDropFromKm = after[i].split; break; }
   }
+  const dynDelta = {};
+  for (const [k, unit] of [['groundContactMs', 'ms'], ['verticalOscCm', 'cm'], ['verticalRatioPct', '%pt']]) {
+    if (peak.every((s) => s[k] != null) && last.every((s) => s[k] != null)) {
+      const a = avg(peak, (s) => s[k]), b = avg(last, (s) => s[k]);
+      dynDelta[k] = { peak: r1(a), last3: r1(b), change: r1(b - a), unit };
+    }
+  }
   const h1 = halves.first, h2 = halves.second;
   return {
     peak: { splits: `${peak[0].split}-${peak[2].split}`, paceMinKm: r2(1 / avg(peak, speed)), cadenceSpm: Math.round(peakCad), strideM: r2(peakStride) },
     last3: { splits: `${last[0].split}-${last[2].split}`, paceMinKm: r2(1 / avg(last, speed)), cadenceSpm: Math.round(avg(last, (s) => s.cadenceSpm)), strideM: r2(avg(last, (s) => s.strideM)) },
     peakToLast: split(peak, last),
     strideDropFromKm,
+    dynamics: Object.keys(dynDelta).length ? dynDelta : undefined,
     halves: h1.cadenceSpm && h2.cadenceSpm ? { firstCadenceSpm: h1.cadenceSpm, secondCadenceSpm: h2.cadenceSpm, firstStrideM: h1.strideM, secondStrideM: h2.strideM } : undefined,
-    basis: 'speed = cadence × stride; stride = distance ÷ steps from the watch cadence (no chest strap needed). strideSharePct = how much of the speed change came from stride length.',
+    basis: 'speed = cadence × stride; stride = distance ÷ steps from the watch cadence. strideSharePct = how much of the speed change came from stride length. dynamics: wrist running dynamics (ground contact time, vertical oscillation, vertical ratio) at the peak vs the last 3 splits.',
   };
 }
 
@@ -182,10 +210,12 @@ export function samplesFromStreams(streams) {
   const time = pick('time'), dist = pick('distance');
   if (!time || !dist) return null;
   const hr = pick('heartrate', 'heart_rate', 'hr'), w = pick('watts', 'power'), alt = pick('altitude', 'fixed_altitude', 'enhanced_altitude'), cad = pick('cadence');
+  const gct = pick('stance_time', 'ground_contact_time'), vo = pick('vertical_oscillation'), vr = pick('vertical_ratio');
   const n = Math.min(time.length, dist.length), out = [];
   for (let i = 0; i < n; i++) {
     if (time[i] == null || dist[i] == null) continue;
-    out.push({ t: +time[i], d: +dist[i], hr: hr && hr[i] > 30 ? +hr[i] : null, w: w && w[i] != null ? +w[i] : null, alt: alt && alt[i] != null ? +alt[i] : null, cad: cad && cad[i] > 0 ? +cad[i] : null });
+    out.push({ t: +time[i], d: +dist[i], hr: hr && hr[i] > 30 ? +hr[i] : null, w: w && w[i] != null ? +w[i] : null, alt: alt && alt[i] != null ? +alt[i] : null, cad: cad && cad[i] > 0 ? +cad[i] : null,
+      dyn: gct || vo || vr ? { gct: gct ? +gct[i] || null : null, vo: vo ? +vo[i] || null : null, vr: vr ? +vr[i] || null : null } : null });
   }
   if (out.length) out.streamTypes = Object.keys(map).sort();
   return out.length ? out : null;
