@@ -741,12 +741,18 @@ export function predictRace(input) {
       // VDOT: 가장 신뢰도 높음 (실제 레이스 기반)
       // LT: 높음 (가민 측정값)
       // 훈련 데이터: 중간 (간접 지표)
+      // 내구성 반영: 장거리 훈련이 부족하면 후반 1/3 구간이 lateDecayPct만큼 느려진다고 보고 전체 페이스에 반영
+      // LT·VDOT 공식은 '충분히 훈련된 경우' 기준이라 후반 감속이 빠져 있음 → 여기에만 적용
+      // 훈련 기반 페이스는 실제 롱런 피로가 이미 들어 있어서 적용하지 않음 (이중 반영 방지)
+      var durMult = 1 + (durabilityIndex ? durabilityIndex.lateDecayPct : 0) / 3;
+      var durTag = durMult > 1.001 ? " · 후반 감속 +" + ((durMult - 1) * 100).toFixed(1) + "% 반영" : "";
+      if (durabilityIndex) durabilityIndex.appliedPct = +((durMult - 1) * 100).toFixed(1);
       var rows = [];
       if (sport === "road_run" && vdotPace > 0) {
         // VDOT은 레이스 실측 기반이라 condFactor 미적용
-        var vdotPred = vdotPace * ageGenderAdj.adj;
-        var ltPred   = lt > 0 ? lt * ltMults.mid * condFactorFinal * ageGenderAdj.adj : 0;
-        var ltHard   = lt > 0 ? lt * ltMults.hard * condFactorFinal * ageGenderAdj.adj : 0;
+        var vdotPred = vdotPace * ageGenderAdj.adj * durMult;
+        var ltPred   = lt > 0 ? lt * ltMults.mid * condFactorFinal * ageGenderAdj.adj * durMult : 0;
+        var ltHard   = lt > 0 ? lt * ltMults.hard * condFactorFinal * ageGenderAdj.adj * durMult : 0;
 
         // dataPace 신뢰도: 훈련 거리가 목표 거리와 비슷할수록 높음
         // 10K 예측인데 훈련이 5km짜리만 있으면 신뢰도 낮춤
@@ -772,32 +778,32 @@ export function predictRace(input) {
           : "⚠ 지표 차이 있음 — 최근 레이스 기록 입력 권장";
 
         rows = [
-          {src:"VDOT 예측 (Jack Daniels)", pace:vdotPred*(1+eleBoostPct), desc:"VDOT "+vdotScore.toFixed(1)+" 기반 — 레이스 실측 최적화", isRecommended:false},
-          {src:"교차검증 통합 (추천)", pace:blended*(1+eleBoostPct), desc:"VDOT 40%+LT 35%+훈련 25% · "+cvLabel, isRecommended:true},
-          ...(ltHard>0?[{src:"LT 도전 페이스", pace:ltHard*(1+eleBoostPct), desc:"LT×"+ltMults.hard.toFixed(2)+" · 최상의 날 기준", isRecommended:false}]:[]),
+          {src:"VDOT 예측 (Jack Daniels)", pace:vdotPred*(1+eleBoostPct), desc:"VDOT "+vdotScore.toFixed(1)+" 기반 — 레이스 실측 최적화"+durTag, isRecommended:false},
+          {src:"교차검증 통합 (추천)", pace:blended*(1+eleBoostPct), desc:"VDOT 40%+LT 35%+훈련 25% · "+cvLabel+durTag, isRecommended:true},
+          ...(ltHard>0?[{src:"LT 도전 페이스", pace:ltHard*(1+eleBoostPct), desc:"LT×"+ltMults.hard.toFixed(2)+" · 최상의 날 기준"+durTag, isRecommended:false}]:[]),
           ...(dataPred>0?[{src:"훈련 기반", pace:dataPred*(1+eleBoostPct), desc:dataLabel, isRecommended:false}]:[]),
         ];
       } else if (lt > 0 && dataPace > 0) {
         // VDOT 없음: LT + 훈련 블렌딩
-        var ltPred2  = lt * ltMults.mid * condFactorFinal * ageGenderAdj.adj;
-        var ltHard2  = lt * ltMults.hard * condFactorFinal * ageGenderAdj.adj;
+        var ltPred2  = lt * ltMults.mid * condFactorFinal * ageGenderAdj.adj * durMult;
+        var ltHard2  = lt * ltMults.hard * condFactorFinal * ageGenderAdj.adj * durMult;
         var dataPred2 = dataPace * condFactorFinal * ageGenderAdj.adj;
         var blend = recentLongPace > 0 ? 0.5 : 0.3;
         var blended2 = ltPred2*(1-blend) + dataPred2*blend;
         rows = [
-          {src:"도전 페이스 (LT×"+ltMults.hard.toFixed(2)+")", pace:ltHard2*(1+eleBoostPct), desc:"LT 기반 최적 페이스", isRecommended:false},
-          {src:"통합 예측 (추천)", pace:blended2*(1+eleBoostPct), desc:"LT+훈련 통합 · "+condLabel, isRecommended:true},
+          {src:"도전 페이스 (LT×"+ltMults.hard.toFixed(2)+")", pace:ltHard2*(1+eleBoostPct), desc:"LT 기반 최적 페이스"+durTag, isRecommended:false},
+          {src:"통합 예측 (추천)", pace:blended2*(1+eleBoostPct), desc:"LT+훈련 통합 · "+condLabel+durTag, isRecommended:true},
           {src:"훈련 기반", pace:dataPred2*(1+eleBoostPct), desc:dataLabel+" · "+dataConfidence, isRecommended:false},
         ];
       } else if (lt > 0) {
         rows = [
-          {src:"도전 페이스 (LT×"+ltMults.hard.toFixed(2)+")", pace:lt*ltMults.hard*condFactorFinal*ageGenderAdj.adj*(1+eleBoostPct), desc:"충분히 훈련된 경우", isRecommended:false},
-          {src:"현실적 예측 (LT×"+ltMults.mid.toFixed(2)+")", pace:lt*ltMults.mid*condFactorFinal*ageGenderAdj.adj*(1+eleBoostPct), desc:"일반적 레이스 기준", isRecommended:true},
-          {src:"여유 페이스 (LT×"+ltMults.easy.toFixed(2)+")", pace:lt*ltMults.easy*condFactorFinal*ageGenderAdj.adj*(1+eleBoostPct), desc:"처음 도전 / 완주 목표", isRecommended:false},
+          {src:"도전 페이스 (LT×"+ltMults.hard.toFixed(2)+")", pace:lt*ltMults.hard*condFactorFinal*ageGenderAdj.adj*durMult*(1+eleBoostPct), desc:"충분히 훈련된 경우"+durTag, isRecommended:false},
+          {src:"현실적 예측 (LT×"+ltMults.mid.toFixed(2)+")", pace:lt*ltMults.mid*condFactorFinal*ageGenderAdj.adj*durMult*(1+eleBoostPct), desc:"일반적 레이스 기준"+durTag, isRecommended:true},
+          {src:"여유 페이스 (LT×"+ltMults.easy.toFixed(2)+")", pace:lt*ltMults.easy*condFactorFinal*ageGenderAdj.adj*durMult*(1+eleBoostPct), desc:"처음 도전 / 완주 목표"+durTag, isRecommended:false},
         ];
       } else if (vdotPace > 0) {
         rows = [
-          {src:"VDOT 예측", pace:vdotPace*condFactor*(1+eleBoostPct), desc:"VDOT "+vdotScore.toFixed(1)+" 기반", isRecommended:true},
+          {src:"VDOT 예측", pace:vdotPace*condFactor*durMult*(1+eleBoostPct), desc:"VDOT "+vdotScore.toFixed(1)+" 기반"+durTag, isRecommended:true},
         ];
       } else if (dataPace > 0) {
         rows = [

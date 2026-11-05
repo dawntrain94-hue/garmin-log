@@ -1920,7 +1920,7 @@ export default function App() {
                         {" / "}{analysis.trainingSummary.durability.totalLongKm}km
                       </div>
                       {analysis.trainingSummary.durability.lateDecayPct > 0.02
-                        ? <div style={{color:"#ff6b35"}}>⚠ 후반 페이스 저하 예상 ~{Math.round(analysis.trainingSummary.durability.lateDecayPct*100)}% — 롱라이드/롱런 추가 권장</div>
+                        ? <div style={{color:"#ff6b35"}}>⚠ 후반 페이스 저하 예상 ~{Math.round(analysis.trainingSummary.durability.lateDecayPct*100)}% — 롱라이드/롱런 추가 권장{analysis.trainingSummary.durability.appliedPct>0&&!analysis.trainingSummary.isCycling?" · LT/VDOT 예측에 +"+analysis.trainingSummary.durability.appliedPct+"% 반영":""}</div>
                         : <div style={{color:"#00e5a0"}}>✓ 후반 페이스 유지 가능</div>
                       }
                     </div>
