@@ -183,7 +183,7 @@ const TOOLS = [
   {
     name: 'get_races',
     title: '대회 일정 · 예측 대비 실제',
-    description: 'Races from the athlete\'s Intervals.icu calendar (RACE_A/B/C events: name, date, type, distance; a goal time is read from the description as "목표 3:59:59" or "goal 3:59:59", course elevation gain as "고도 1300" or "D+1300"). Upcoming races get days-to-go and the current YMC prediction (same model as predict_race) with the gap to the goal. Past races are matched to the activity recorded that day and get prediction-vs-actual: the YMC prediction recomputed with data up to the day before the race, the error per prediction row, which row was closest, plus pacing (first vs second half against the predicted pace, HR drift, the km where stride started shortening). Use for "how did my race go vs the prediction?", "what races do I have?" and D-day questions.',
+    description: 'Races from the athlete\'s Intervals.icu calendar (RACE_A/B/C events: name, date, type, distance; a goal time is read from the description as "목표 3:59:59" or "goal 3:59:59", course elevation gain as "고도 1300" or "D+1300", the official finish time as "기록 5:18:48", which then counts as the actual result). Upcoming races get days-to-go and the current YMC prediction (same model as predict_race) with the gap to the goal. Past races are matched to the activity recorded that day and get prediction-vs-actual: the YMC prediction recomputed with data up to the day before the race, the error per prediction row, which row was closest, plus pacing (first vs second half against the predicted pace, HR drift, the km where stride started shortening). Use for "how did my race go vs the prediction?", "what races do I have?" and D-day questions.',
     inputSchema: {
       type: 'object',
       properties: {

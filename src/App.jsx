@@ -656,12 +656,12 @@ export function RacesPanel(props) {
                 {!a ? <div style={{fontFamily:"monospace",fontSize:11,color:C.muted}}>그날 기록된 활동을 찾지 못했어요</div> : (
                   <div style={{fontFamily:"monospace",fontSize:12,lineHeight:1.9,marginTop:4}}>
                     <div>
-                      실제 <span style={{color:C.accent,fontWeight:700}}>{a.comparedOn==="moving" ? a.moving : (a.elapsed||a.moving)}</span>
-                      <span style={{color:C.muted,fontSize:10}}> {a.comparedOn==="moving" ? "이동 (경과 "+a.elapsed+")" : ""} · {a.km}km{isRide&&a.movingSpeedKmh ? " · "+a.movingSpeedKmh+"km/h" : ""}{!isRide&&a.movingPace ? " · "+a.movingPace+"/km" : ""}</span>
+                      실제 <span style={{color:C.accent,fontWeight:700}}>{a.comparedOn==="official" ? a.official : a.comparedOn==="moving" ? a.moving : (a.elapsed||a.moving)}</span>
+                      <span style={{color:C.muted,fontSize:10}}> {a.comparedOn==="official" ? "공식 기록 · 기기 이동 "+a.moving : a.comparedOn==="moving" ? "이동 (경과 "+a.elapsed+")" : ""} · {a.km}km{isRide&&a.movingSpeedKmh ? " · "+a.movingSpeedKmh+"km/h" : ""}{!isRide&&a.movingPace ? " · "+a.movingPace+"/km" : ""}</span>
                     </div>
                     {rec && (
                       <div>
-                        예측 {isRide ? (rec.predictedMoving||rec.predicted)+" (이동)" : rec.predicted}
+                        예측 {isRide ? (a.comparedOn==="official" ? rec.predicted : (rec.predictedMoving||rec.predicted)+" (이동)") : rec.predicted}
                         {rec.errorMin!=null
                           ? <span> · 오차 <span style={{color:errCol(rec.errorMin,5),fontWeight:700}}>{rec.errorMin>0?"+":""}{rec.errorMin}분</span></span>
                           : isRide && rec.speedErrorPct!=null

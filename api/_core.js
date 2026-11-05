@@ -131,7 +131,7 @@ export function eventKm(e) {
 }
 // 설명란의 "목표 3:59:59" / "goal 1:45:00"
 export function eventGoal(e) {
-  const m = String(e.description || '').match(/(?:목표|goal|target)\s*[:：]?\s*(\d{1,2}:\d{2}(?::\d{2})?)/i);
+  const m = String(e.description || '').match(/(?:목표|goal|target)\s*(?:기록|시간|time)?\s*[:：]?\s*(\d{1,2}:\d{2}(?::\d{2})?)/i);
   return m ? m[1] : null;
 }
 // 설명란의 획득고도: "고도 1300", "획득고도 1,300m", "D+1300", "1300m↑"
@@ -139,6 +139,14 @@ export function eventGain(e) {
   const t = String(e.description || '').replace(/(\d),(\d{3})/g, '$1$2');
   const m = t.match(/(?:획득\s*고도|상승\s*고도|고도|D\+)\s*[:：]?\s*(\d{2,5})/i) || t.match(/(\d{2,5})\s*m\s*(?:↑|상승)/);
   return m ? parseInt(m[1], 10) : null;
+}
+// 설명란의 공식 기록: "기록 5:18:48", "공식기록 5:18:48", "result 5:18:48" ("목표 기록"은 제외)
+export function eventResult(e) {
+  const t = String(e.description || '');
+  const re = /(공식\s*기록|완주\s*기록|기록|결과|result|finish)\s*[:：]?\s*(\d{1,2}:\d{2}(?::\d{2})?)/gi;
+  let m;
+  while ((m = re.exec(t))) { if (!/(목표|goal|target)\s*$/i.test(t.slice(0, m.index))) return m[2]; }
+  return null;
 }
 export const daysBetween = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
 
@@ -148,7 +156,7 @@ export function toRace(e, today) {
     eventId: e.id, date, name: e.name || null,
     priority: String(e.category || '').replace('RACE_', '') || null,
     type: e.type || null, sport: RACE_SPORT[e.type] || null,
-    distanceKm: eventKm(e), goalTime: eventGoal(e), elevationGainM: eventGain(e),
+    distanceKm: eventKm(e), goalTime: eventGoal(e), elevationGainM: eventGain(e), officialTime: eventResult(e),
     daysUntil: DATE_RE.test(date) ? daysBetween(today, date) : null,
   };
 }
@@ -176,7 +184,8 @@ export async function pastRaceReview(race, acts) {
   const moving = act.movingMin || null, elapsed = act.elapsedMin || null;
   // 기록 시간: 정지가 많지 않으면 경과 시간(대회 기록에 가까움), 정지·켜둔 시간이 길면 이동 시간 기준으로 비교
   const stopHeavy = moving && elapsed && elapsed / moving > 1.15;
-  const actualMin = stopHeavy ? moving : (elapsed || moving);
+  const officialMin = race.officialTime ? parseClock(race.officialTime) : null; // 설명란의 공식 기록이 있으면 그게 실제 기록
+  const actualMin = officialMin || (stopHeavy ? moving : (elapsed || moving));
   const raceKm = race.distanceKm || act.km;
   const distOffPct = race.distanceKm ? +((act.km / race.distanceKm - 1) * 100).toFixed(1) : 0;
   const distMatches = Math.abs(distOffPct) <= 5;
@@ -186,14 +195,16 @@ export async function pastRaceReview(race, acts) {
     activity: {
       id: act.id, date: act.date, name: act.name, km: act.km, avgHR: act.avgHR,
       moving: moving ? minText(moving) : null, elapsed: elapsed ? minText(elapsed) : null,
-      comparedOn: stopHeavy ? 'moving' : 'elapsed',
+      official: officialMin ? minText(officialMin) : undefined,
+      comparedOn: officialMin ? 'official' : stopHeavy ? 'moving' : 'elapsed',
       movingSpeedKmh: isRide && actualSpeed ? +actualSpeed.toFixed(1) : undefined,
       movingPace: !isRide && actualPace ? paceText(actualPace) : undefined,
     },
     notes: [],
   };
-  if (stopHeavy) out.notes.push(`경과 ${minText(elapsed)} 중 이동 ${minText(moving)} — 정지·켜둔 시간이 길어서 이동 시간 기준으로 비교`);
-  if (!distMatches) out.notes.push(`기록 거리 ${act.km}km ≠ 대회 거리 ${race.distanceKm}km (${distOffPct > 0 ? '+' : ''}${distOffPct}%) — 기록 일부가 빠졌거나 코스가 달라서 완주 시간 비교는 하지 않고 ${isRide ? '속도' : '페이스'}만 비교`);
+  if (officialMin && !distMatches) out.notes.push(`공식 기록 ${minText(officialMin)}로 비교 — 워치·기기 기록은 ${act.km}km만 남아 있어서 구간 분석은 그 부분만`);
+  else if (stopHeavy && !officialMin) out.notes.push(`경과 ${minText(elapsed)} 중 이동 ${minText(moving)} — 정지·켜둔 시간이 길어서 이동 시간 기준으로 비교`);
+  if (!distMatches && !officialMin) out.notes.push(`기록 거리 ${act.km}km ≠ 대회 거리 ${race.distanceKm}km (${distOffPct > 0 ? '+' : ''}${distOffPct}%) — 기록 일부가 빠졌거나 코스가 달라서 완주 시간 비교는 하지 않고 ${isRide ? '속도' : '페이스'}만 비교`);
 
   // 대회 전날까지의 데이터로 YMC 예측을 다시 계산 (그때 앱이 냈을 예측)
   if (race.sport && raceKm) {
@@ -208,7 +219,8 @@ export async function pastRaceReview(race, acts) {
             label: x.label, recommended: /추천/.test(x.label) || undefined,
             predicted: totMin ? minText(totMin) : x.time, predictedMoving: movMin ? minText(movMin) : null,
             predictedSpeedKmh: predSpeed ? +predSpeed.toFixed(1) : null,
-            errorMin: distMatches && movMin && moving ? +(moving - movMin).toFixed(1) : null, // 이동 시간끼리
+            // 공식 기록이 있으면 정지 포함 예측 시간과, 없으면 이동 시간끼리 비교
+            errorMin: officialMin && totMin ? +(officialMin - totMin).toFixed(1) : distMatches && movMin && moving ? +(moving - movMin).toFixed(1) : null,
             speedErrorPct: predSpeed && actualSpeed ? +((actualSpeed / predSpeed - 1) * 100).toFixed(1) : null, // −면 예측보다 느림
           };
         });
@@ -217,7 +229,7 @@ export async function pastRaceReview(race, acts) {
           const m = parseClock(x.time), predPace = m ? m / raceKm : null;
           return {
             label: x.label, recommended: x.recommended, predicted: x.time, predictedPace: x.pace,
-            errorMin: distMatches && m && actualMin ? +(actualMin - m).toFixed(1) : null,
+            errorMin: (officialMin || distMatches) && m && actualMin ? +(actualMin - m).toFixed(1) : null,
             paceErrorPct: predPace && actualPace ? +((actualPace / predPace - 1) * 100).toFixed(1) : null, // +면 예측보다 느림
           };
         });
@@ -381,7 +393,7 @@ export async function getRaces(args = {}) {
     today,
     upcoming, past,
     notes: [
-      'Distances come from the Intervals.icu calendar. In a race description, "목표 h:mm:ss" sets a goal and "고도 1300" / "D+1300" sets the course elevation gain.',
+      'Distances come from the Intervals.icu calendar. In a race description, "목표 h:mm:ss" sets a goal, "기록 h:mm:ss" the official finish time (used as the actual result) and "고도 1300" / "D+1300" the course elevation gain.',
       ...(missing.length ? [`${missing.length} race(s) have no distance in Intervals.icu; fields present: ${[...new Set(missing.flatMap((e) => Object.keys(e)))].sort().join(', ')}`] : []),
     ],
   };
