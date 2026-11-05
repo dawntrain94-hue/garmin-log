@@ -37,6 +37,8 @@ claude.ai → Customize → Connectors → Add custom connector
 - URL: `https://garmin-log.vercel.app/api/mcp`
 - 인증: 요청 헤더 `Authorization: Bearer <YMC_SECRET>`
 
-읽기 전용 도구: `get_training_overview`, `list_activities`, `get_cycling_intensity`, `get_recovery`, `get_thresholds`, `get_activity`, `get_activity_splits` (km별 구간·심박 드리프트·심박 존·케이던스·보폭·폼 변화), `predict_race` (앱 🎯 예측 탭과 같은 계산: 예측 기록·준비도·내구성·TID·컨디션)
+읽기 전용 도구: `get_training_overview`, `list_activities`, `get_cycling_intensity`, `get_recovery`, `get_thresholds`, `get_activity`, `get_activity_splits` (km별 구간·심박 드리프트·심박 존·케이던스·보폭·폼 변화), `predict_race` (앱 🎯 예측 탭과 같은 계산: 예측 기록·준비도·내구성·TID·컨디션), `get_races` (Intervals.icu 캘린더 대회: D-day·예측, 지난 대회는 대회 전날 기준 예측 대비 실제)
 
 트랙·트레드밀·실내 활동은 상승고도를 0으로 봐요 (기기 기록값은 `recordedElevationGain`에 남김). 앱에서도 같은 규칙으로 저장된 기록을 한 번 정리해요 (`src/elevation.js`).
+
+대회 설명란에 `목표 3:59:59`를 쓰면 목표 기록으로, `고도 1300` 또는 `D+1300`을 쓰면 코스 획득고도로 읽어요.
