@@ -70,6 +70,11 @@ export function fetchSplits(id) {
   return call({ action: "splits", id: id });
 }
 
+// Intervals.icu 캘린더 대회 (다가오는 대회 예측, 지난 대회 예측 대비 실제)
+export function fetchRaces() {
+  return call({ action: "races" });
+}
+
 export function fetchIntervalsProfile() {
   return call({ action: "profile" });
 }

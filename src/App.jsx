@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { getSecret, setSecret, listActivities, fetchGpx, mapIntervalsType, UnauthorizedError, fetchWellness, fetchIntervalsProfile, fetchSplits } from "./intervalsSync";
+import { getSecret, setSecret, listActivities, fetchGpx, mapIntervalsType, UnauthorizedError, fetchWellness, fetchIntervalsProfile, fetchSplits, fetchRaces } from "./intervalsSync";
 import { mergeWellness, computeWellnessStatus } from "./wellness";
 import { buildPowerBins, sustainedMinutes } from "./intensity";
 import { dedupeActivities } from "./dedupe";
@@ -586,6 +586,95 @@ function tabBtn(active) {
   return {background:active?C.accent:"transparent",color:active?C.bg:C.muted,border:"none",padding:"8px 16px",cursor:"pointer",fontFamily:"monospace",fontSize:11,letterSpacing:1,fontWeight:active?700:400,transition:"all .15s"};
 }
 
+// ── 대회 패널 (🎯 예측 탭 위) — Intervals.icu 캘린더의 대회 ─────────────────────
+var SPORT_SHORT = { road_run:"로드", trail_run:"트레일", cycling:"사이클", mtb:"MTB" };
+function fmtDate(d) { return d ? d.slice(5).replace("-", "/") : ""; }
+export function RacesPanel(props) {
+  var st = props.state;
+  var btn = {background:"transparent",border:"1px solid "+C.accent,color:C.accent,padding:"6px 12px",cursor:"pointer",fontFamily:"monospace",fontSize:11};
+  if (!st || st.loading || st.error) {
+    return (
+      <div style={Object.assign(cardStyle(),{marginBottom:10,borderLeft:"3px solid "+C.blue})}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+          <div style={secTitle(C.blue)}>🏁 내 대회 (Intervals.icu 캘린더)</div>
+          <button onClick={props.onLoad} disabled={st&&st.loading} style={btn}>{st&&st.loading ? "불러오는 중…" : "불러오기"}</button>
+        </div>
+        {st&&st.loading && <div style={{fontFamily:"monospace",fontSize:10,color:C.muted}}>지난 대회는 대회 전날 기준 예측을 다시 계산해서 조금 걸려요</div>}
+        {st&&st.error && <div style={{fontFamily:"monospace",fontSize:11,color:C.red}}>{st.error}</div>}
+      </div>
+    );
+  }
+  var d = st.data, up = d.upcoming || [], past = (d.past || []).filter(function(r){ return r.review; });
+  var recOf = function(rows){ return (rows || []).find(function(x){ return x.recommended; }); };
+  return (
+    <div style={{marginBottom:10}}>
+      <div style={Object.assign(cardStyle(),{borderLeft:"3px solid "+C.blue,marginBottom:past.length?8:0})}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+          <div style={secTitle(C.blue)}>🏁 다가오는 대회</div>
+          <button onClick={props.onLoad} style={Object.assign({}, btn, {border:"1px solid "+C.border,color:C.muted})}>새로고침</button>
+        </div>
+        {!up.length && <div style={{fontFamily:"monospace",fontSize:11,color:C.muted}}>캘린더에 다가오는 대회가 없어요</div>}
+        {up.map(function(r, i){
+          var p = r.prediction, rec = p && recOf(p.rows), g = p && p.goal;
+          return (
+            <div key={r.eventId||i} style={{borderTop:i?"1px solid "+C.border:"none",paddingTop:i?10:0,marginTop:i?10:0}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8}}>
+                <div style={{fontSize:15,fontWeight:700}}>{r.name}{r.priority && <span style={{fontFamily:"monospace",fontSize:10,color:C.gold,marginLeft:6}}>{r.priority}</span>}</div>
+                <div style={{fontFamily:"monospace",fontSize:16,fontWeight:700,color:r.daysUntil<=7?C.red:C.accent}}>{r.daysUntil===0?"D-DAY":"D-"+r.daysUntil}</div>
+              </div>
+              <div style={{fontFamily:"monospace",fontSize:11,color:C.muted,marginTop:2}}>
+                {fmtDate(r.date)} · {SPORT_SHORT[r.sport]||r.type} · {r.distanceKm ? r.distanceKm+"km" : "거리 없음"}{r.elevationGainM!=null ? " · "+r.elevationGainM+"m↑" : ""}{r.goalTime ? " · 목표 "+r.goalTime : ""}
+              </div>
+              {rec && (
+                <div style={{fontFamily:"monospace",fontSize:12,color:C.text,marginTop:6}}>
+                  YMC 예측 <span style={{color:C.accent,fontWeight:700}}>{rec.time}</span> ({rec.pace}/km)
+                  {g && g.gapVsRecommendedMin!=null && (
+                    <span style={{color:g.gapVsRecommendedMin>0?C.red:C.accent}}> · 목표까지 {g.gapVsRecommendedMin>0 ? g.gapVsRecommendedMin.toFixed(1)+"분 부족" : Math.abs(g.gapVsRecommendedMin).toFixed(1)+"분 여유"} (필요 {g.paceRequired}/km)</span>
+                  )}
+                </div>
+              )}
+              {p && p.readinessPct!=null && <div style={{fontFamily:"monospace",fontSize:10,color:C.muted,marginTop:2}}>준비도 {p.readinessPct}% · 내구성 {p.durability||"—"} · 컨디션 {p.condition||"—"}</div>}
+              {p && p.error && <div style={{fontFamily:"monospace",fontSize:10,color:C.red,marginTop:2}}>{p.error}</div>}
+              {r.warning && <div style={{fontFamily:"monospace",fontSize:10,color:C.gold,marginTop:4}}>⚠ 캘린더 설명란에 "고도 1300"처럼 획득고도를 적어주세요 — 없으면 오르막이 빠진 예측이에요</div>}
+              {r.sport && r.distanceKm && (
+                <button onClick={function(){props.onUse(r);}} style={Object.assign({}, btn, {marginTop:8})}>이 대회로 예측 설정 →</button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {past.length > 0 && (
+        <div style={Object.assign(cardStyle(),{borderLeft:"3px solid "+C.gold})}>
+          <div style={secTitle(C.gold)}>📊 지난 대회 — 예측 대비 실제</div>
+          {past.map(function(r, i){
+            var rv = r.review, pr = rv.predictionAsOfRaceEve, rec = pr && recOf(pr.rows), pc = rv.pacing;
+            return (
+              <div key={r.eventId||i} style={{borderTop:i?"1px solid "+C.border:"none",paddingTop:i?10:0,marginTop:i?10:0}}>
+                <div style={{fontSize:14,fontWeight:700}}>{r.name} <span style={{fontFamily:"monospace",fontSize:10,color:C.muted}}>{fmtDate(r.date)} · {r.distanceKm||"?"}km</span></div>
+                {!rv.activity ? <div style={{fontFamily:"monospace",fontSize:11,color:C.muted}}>그날 기록된 활동을 찾지 못했어요</div> : (
+                  <div style={{fontFamily:"monospace",fontSize:12,lineHeight:1.9,marginTop:4}}>
+                    <div>실제 <span style={{color:C.accent,fontWeight:700}}>{rv.activity.elapsed}</span>{rec ? <span> · 예측 {rec.predicted} · 오차 <span style={{color:Math.abs(rec.errorMin)<=5?C.accent:C.red,fontWeight:700}}>{rec.errorMin>0?"+":""}{rec.errorMin}분</span></span> : null}</div>
+                    {pr && pr.closest && rec && pr.closest!==rec.label && <div style={{fontSize:10,color:C.muted}}>가장 가까웠던 예측: {pr.closest}</div>}
+                    {pc && !pc.error && (
+                      <div style={{fontSize:11,color:"#a8b4c8"}}>
+                        전반 {pc.firstHalf} → 후반 {pc.secondHalf}
+                        {pc.firstHalfVsRecommendedPct!=null && <span style={{color:pc.firstHalfVsRecommendedPct< -2?C.red:C.text}}> · 전반이 예측 페이스보다 {Math.abs(pc.firstHalfVsRecommendedPct)}% {pc.firstHalfVsRecommendedPct<0?"빠름":"느림"}</span>}
+                        {pc.strideDropFromKm && <span> · 보폭 감소 {pc.strideDropFromKm}km~</span>}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {r.warning && <div style={{fontFamily:"monospace",fontSize:10,color:C.gold}}>⚠ 획득고도 없음 — 트레일·사이클 예측 오차가 클 수 있어요</div>}
+              </div>
+            );
+          })}
+          <div style={{fontFamily:"monospace",fontSize:9,color:C.muted,marginTop:8}}>예측은 대회 전날까지의 기록으로 다시 계산 · 역치는 현재 Intervals.icu 설정값 · 오차 + = 예측보다 느림</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── 구간·폼 분석 패널 (활동 상세) ─────────────────────────────────────────────
 export function SplitsPanel(props) {
   var d = props.data, isRide = props.isRide;
@@ -713,6 +802,7 @@ export default function App() {
   var _slg = useState(function(){ try { return JSON.parse(localStorage.getItem("tlog_synclog") || "null"); } catch(e) { return null; } });
   var syncLog = _slg[0], setSyncLog = _slg[1];
   var _spl = useState({}); var splitsById = _spl[0], setSplitsById = _spl[1]; // 활동별 구간 분석 (메모리 캐시)
+  var _rc = useState(null); var racesState = _rc[0], setRacesState = _rc[1]; // 캘린더 대회 (메모리 캐시)
   var _slo = useState(false); var syncLogOpen = _slo[0], setSyncLogOpen = _slo[1];
 
   // ── storage
@@ -1046,6 +1136,27 @@ export default function App() {
       if (e instanceof UnauthorizedError) setSecret("");
       setSplitsById(function(m){ return Object.assign({}, m, {[key]: {error: e.message || "불러오기 실패"}}); });
     }
+  }
+
+  async function loadRaces() {
+    if (!getSecret()) {
+      var s = window.prompt("Vercel에 넣은 YMC_SECRET 값을 입력하세요 (이 기기에 한 번만 저장돼요)");
+      if (!s) return;
+      setSecret(s.trim());
+    }
+    setRacesState({loading:true});
+    try { setRacesState({data: await fetchRaces()}); }
+    catch(e) { if (e instanceof UnauthorizedError) setSecret(""); setRacesState({error: e.message || "불러오기 실패"}); }
+  }
+  // 🎯 예측 탭을 처음 열 때 한 번 자동으로 불러옴 (비밀키가 저장돼 있을 때만)
+  useEffect(function(){
+    if (view === "predict" && !racesState && getSecret()) loadRaces();
+  }, [view]);
+  function useRaceForPrediction(r) {
+    setSport(r.sport);
+    setRacePreset("custom");
+    setRaceKmInput(String(r.distanceKm));
+    showToast(r.name + " — " + r.distanceKm + "km로 설정했어요" + ((r.sport==="trail_run"||r.sport==="cycling"||r.sport==="mtb") ? " · 코스 GPX를 올리면 더 정확해요" : ""));
   }
 
   async function deleteActivity(id) {
@@ -1731,6 +1842,7 @@ export default function App() {
           <div>
             {!analysis ? (
               <div>
+                <RacesPanel state={racesState} onLoad={loadRaces} onUse={useRaceForPrediction} />
                 {/* 프로필 상태 */}
                 <div style={Object.assign(cardStyle(),{marginBottom:10,borderLeft:"3px solid "+((profile.ltPaceMinKm||profile.ftp)?C.accent:C.muted)})}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>

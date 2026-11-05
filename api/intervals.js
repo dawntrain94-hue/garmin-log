@@ -12,6 +12,7 @@
 //   GET /api/intervals?action=wellness&oldest=2026-09-01&newest=2026-11-04
 //   GET /api/intervals?action=profile
 //   GET /api/intervals?action=splits&id=i123456789   (km별 구간·심박·케이던스·보폭·폼 변화)
+//   GET /api/intervals?action=races                   (캘린더 대회: D-day·예측, 지난 대회 예측 대비 실제)
 
 import { gzipSync } from 'node:zlib';
 import {
@@ -19,6 +20,7 @@ import {
   toWellness, toSettings, slimGpx, icuGpxText, UpstreamError, normSecret, BASE,
 } from './_icu.js';
 import { loadActivitySplits, SplitsError } from './_activitySplits.js';
+import { getRaces, ToolError } from './_core.js';
 
 export { slimGpx }; // re-exported for tests
 
@@ -156,7 +158,17 @@ export default async function handler(req, res) {
       }
     }
 
-    return res.status(400).json({ error: 'action must be list, gpx, wellness, profile or splits' });
+    if (action === 'races') {
+      try {
+        return res.status(200).json(await getRaces({ past_limit: 3 }));
+      } catch (e) {
+        if (e instanceof ToolError) return res.status(422).json({ error: e.message });
+        if (e instanceof UpstreamError) return res.status(502).json({ error: e.message, upstreamStatus: e.status });
+        throw e;
+      }
+    }
+
+    return res.status(400).json({ error: 'action must be list, gpx, wellness, profile, splits or races' });
   } catch (e) {
     return res.status(502).json({ error: String(e?.message || e) });
   }
