@@ -637,7 +637,7 @@ export function RacesPanel(props) {
                 var cr = p.cycling.find(function(x){ return /추천/.test(x.label); }) || p.cycling[Math.min(1, p.cycling.length-1)];
                 return <div style={{fontFamily:"monospace",fontSize:12,color:C.text,marginTop:6}}>YMC 예측 <span style={{color:C.accent,fontWeight:700}}>{cr.time}</span> ({cr.avgSpeedKmh}km/h · IF {cr.intensityFactor}) <span style={{color:C.muted,fontSize:10}}>범위 {p.cycling[p.cycling.length-1].time} ~ {p.cycling[0].time}</span></div>;
               })()}
-              {p && p.readinessPct!=null && <div style={{fontFamily:"monospace",fontSize:10,color:C.muted,marginTop:2}}>준비도 {p.readinessPct}% · 내구성 {p.durability||"—"} · 컨디션 {p.condition||"—"}</div>}
+              {p && p.readinessPct!=null && <div style={{fontFamily:"monospace",fontSize:10,color:C.muted,marginTop:2}}>준비도 {p.readinessPct}% · 내구성 {p.durability||"—"} · {String(p.condition||"컨디션 —").indexOf("컨디션")===0 ? p.condition : "컨디션 "+p.condition}</div>}
               {r.savedPrediction ? (
                 <div style={{fontFamily:"monospace",fontSize:10,color:C.accent,marginTop:2}}>📌 대회 전 예측 저장됨 ({fmtDate(r.savedPrediction.savedOn)}) — 추천 {r.savedPrediction.recommended}{r.snapshotSaved ? " · 방금 캘린더 설명란에 저장" : ""}</div>
               ) : r.daysUntil > 1 ? (
