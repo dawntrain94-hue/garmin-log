@@ -633,7 +633,17 @@ export function RacesPanel(props) {
                   )}
                 </div>
               )}
+              {p && p.cycling && p.cycling.length > 0 && (function(){
+                var cr = p.cycling.find(function(x){ return /추천/.test(x.label); }) || p.cycling[Math.min(1, p.cycling.length-1)];
+                return <div style={{fontFamily:"monospace",fontSize:12,color:C.text,marginTop:6}}>YMC 예측 <span style={{color:C.accent,fontWeight:700}}>{cr.time}</span> ({cr.avgSpeedKmh}km/h · IF {cr.intensityFactor}) <span style={{color:C.muted,fontSize:10}}>범위 {p.cycling[p.cycling.length-1].time} ~ {p.cycling[0].time}</span></div>;
+              })()}
               {p && p.readinessPct!=null && <div style={{fontFamily:"monospace",fontSize:10,color:C.muted,marginTop:2}}>준비도 {p.readinessPct}% · 내구성 {p.durability||"—"} · 컨디션 {p.condition||"—"}</div>}
+              {r.savedPrediction ? (
+                <div style={{fontFamily:"monospace",fontSize:10,color:C.accent,marginTop:2}}>📌 대회 전 예측 저장됨 ({fmtDate(r.savedPrediction.savedOn)}) — 추천 {r.savedPrediction.recommended}{r.snapshotSaved ? " · 방금 캘린더 설명란에 저장" : ""}</div>
+              ) : r.daysUntil > 1 ? (
+                <div style={{fontFamily:"monospace",fontSize:10,color:C.muted,marginTop:2}}>대회 전날 예측이 캘린더 설명란에 자동 저장돼요</div>
+              ) : null}
+              {r.snapshotError && <div style={{fontFamily:"monospace",fontSize:10,color:C.red,marginTop:2}}>예측 저장 실패: {r.snapshotError}</div>}
               {p && p.error && <div style={{fontFamily:"monospace",fontSize:10,color:C.red,marginTop:2}}>{p.error}</div>}
               {r.warning && <div style={{fontFamily:"monospace",fontSize:10,color:C.gold,marginTop:4}}>⚠ 캘린더 설명란에 "고도 1300"처럼 획득고도를 적어주세요 — 없으면 오르막이 빠진 예측이에요</div>}
               {r.sport && r.distanceKm && (
@@ -663,9 +673,15 @@ export function RacesPanel(props) {
                       실제 <span style={{color:C.accent,fontWeight:700}}>{a.comparedOn==="official" ? a.official : a.comparedOn==="moving" ? a.moving : (a.elapsed||a.moving)}</span>
                       <span style={{color:C.muted,fontSize:10}}> {a.comparedOn==="official" ? "공식 기록 · 기기 이동 "+a.moving : a.comparedOn==="moving" ? "이동 (경과 "+a.elapsed+")" : ""} · {a.km}km{isRide&&a.movingSpeedKmh ? " · "+a.movingSpeedKmh+"km/h" : ""}{!isRide&&a.movingPace ? " · "+a.movingPace+"/km" : ""}</span>
                     </div>
-                    {rec && (
+                    {rv.savedPrediction && (
                       <div>
-                        예측 {isRide ? (a.comparedOn==="official" ? rec.predicted : (rec.predictedMoving||rec.predicted)+" (이동)") : rec.predicted}
+                        📌 대회 전 예측 {rv.savedPrediction.recommended} <span style={{color:C.muted,fontSize:10}}>({fmtDate(rv.savedPrediction.savedOn)} 저장)</span>
+                        {rv.savedPrediction.errorMin!=null && <span> · 오차 <span style={{color:errCol(rv.savedPrediction.errorMin,5),fontWeight:700}}>{rv.savedPrediction.errorMin>0?"+":""}{rv.savedPrediction.errorMin}분</span></span>}
+                      </div>
+                    )}
+                    {rec && (
+                      <div style={rv.savedPrediction ? {fontSize:10,color:C.muted} : null}>
+                        {rv.savedPrediction ? "다시 계산한 예측 " : "예측 "}{isRide ? (a.comparedOn==="official" ? rec.predicted : (rec.predictedMoving||rec.predicted)+" (이동)") : rec.predicted}
                         {rec.errorMin!=null
                           ? <span> · 오차 <span style={{color:errCol(rec.errorMin,5),fontWeight:700}}>{rec.errorMin>0?"+":""}{rec.errorMin}분</span></span>
                           : isRide && rec.speedErrorPct!=null

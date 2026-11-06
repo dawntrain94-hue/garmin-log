@@ -13,6 +13,9 @@
 //   GET /api/intervals?action=profile
 //   GET /api/intervals?action=splits&id=i123456789   (km별 구간·심박·케이던스·보폭·폼 변화)
 //   GET /api/intervals?action=races                   (캘린더 대회: D-day·예측, 지난 대회 예측 대비 실제)
+//   GET /api/intervals?action=snapshot                (대회 전날·당일 예측을 대회 설명란에 저장 — Vercel Cron이 매일 20:00 KST 호출)
+//
+// Optional: CRON_SECRET — Vercel Cron이 Authorization: Bearer <CRON_SECRET>로 부르는 snapshot만 허용
 
 import { gzipSync } from 'node:zlib';
 import {
@@ -54,10 +57,13 @@ export default async function handler(req, res) {
   if (!process.env.INTERVALS_API_KEY) {
     return res.status(500).json({ error: '서버에 INTERVALS_API_KEY가 없어요 (환경변수 추가 후 Redeploy 필요)' });
   }
+  // Vercel Cron: snapshot만, CRON_SECRET이 설정돼 있을 때만
+  const cronSecret = norm(process.env.CRON_SECRET);
+  const isCron = !!cronSecret && req.query.action === 'snapshot' && req.headers.authorization === `Bearer ${cronSecret}`;
   let raw = req.headers['x-ymc-secret'] || '';
   try { raw = decodeURIComponent(raw); } catch { /* not encoded */ }
   const sent = norm(raw);
-  if (sent !== serverSecret) {
+  if (!isCron && sent !== serverSecret) {
     // 값은 절대 돌려주지 않고, 어디서 어긋나는지만 알려줌
     return res.status(401).json({
       error: 'unauthorized',
@@ -158,6 +164,16 @@ export default async function handler(req, res) {
       }
     }
 
+    if (action === 'snapshot') {
+      try {
+        const r = await getRaces({ days_back: 0, days_ahead: 2, past_limit: 0 });
+        return res.status(200).json({ today: r.today, races: r.upcoming.map((x) => ({ name: x.name, date: x.date, daysUntil: x.daysUntil, saved: !!x.snapshotSaved, savedPrediction: x.savedPrediction || null, error: x.snapshotError || (x.prediction && x.prediction.error) || undefined })) });
+      } catch (e) {
+        if (e instanceof UpstreamError) return res.status(502).json({ error: e.message, upstreamStatus: e.status });
+        throw e;
+      }
+    }
+
     if (action === 'races') {
       try {
         return res.status(200).json(await getRaces({ past_limit: 3 }));
@@ -168,7 +184,7 @@ export default async function handler(req, res) {
       }
     }
 
-    return res.status(400).json({ error: 'action must be list, gpx, wellness, profile, splits or races' });
+    return res.status(400).json({ error: 'action must be list, gpx, wellness, profile, splits, races or snapshot' });
   } catch (e) {
     return res.status(502).json({ error: String(e?.message || e) });
   }

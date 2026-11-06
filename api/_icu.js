@@ -45,6 +45,13 @@ export async function icuJson(path) {
   return r.json();
 }
 
+// PUT JSON (캘린더 이벤트 설명란에 대회 전 예측을 저장할 때만 씀)
+export async function icuPut(path, body) {
+  const r = await fetch(`${BASE}${path}`, { method: 'PUT', headers: { Authorization: authHeader(), 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) throw new UpstreamError(r.status);
+  return r.json().catch(() => null);
+}
+
 // GET an activity's GPX as text (handles gzipped responses)
 export async function icuGpxText(id) {
   const r = await fetch(`${BASE}/activity/${id}/gpx-file`, { headers: { Authorization: authHeader() } });

@@ -2,7 +2,7 @@
 // Files starting with "_" in /api are not deployed as routes on Vercel.
 
 import {
-  DATE_RE, num, resolveAthlete, icuJson, icuGpxText, toWellness, toSettings, gpxPowerSeries,
+  DATE_RE, num, resolveAthlete, icuJson, icuGpxText, icuPut, toWellness, toSettings, gpxPowerSeries, UpstreamError,
 } from './_icu.js';
 import { buildPowerBins, sustainedMinutes } from '../src/intensity.js';
 import { dedupeActivities } from '../src/dedupe.js';
@@ -148,6 +148,45 @@ export function eventResult(e) {
   while ((m = re.exec(t))) { if (!/(목표|goal|target)\s*$/i.test(t.slice(0, m.index))) return m[2]; }
   return null;
 }
+// ── 대회 전 예측 저장: Intervals.icu 대회 설명란에 한 줄로 남김 (DB 없이, 원본 캘린더에 같이 보관)
+//   [YMC 예측 2026-11-06] 추천 5:15:00 · 19.4km/h · IF 0.50 | 범위 4:33:00–5:56:00
+// 목표·기록·고도 파서가 이 줄을 잘못 읽지 않도록 그 단어들은 쓰지 않음
+const SNAP_RE = /\[YMC 예측 (\d{4}-\d{2}-\d{2})\]\s*추천\s*(\d{1,2}:\d{2}:\d{2})([^\n]*)/;
+export function eventSnapshot(e) {
+  const m = String(e.description || '').match(SNAP_RE);
+  if (!m) return null;
+  const rest = m[3] || '';
+  const pace = rest.match(/(\d{1,2}:\d{2})\/km/), speed = rest.match(/([\d.]+)km\/h/), ifm = rest.match(/IF\s*([\d.]+)/), range = rest.match(/범위\s*(\d{1,2}:\d{2}:\d{2})[–-](\d{1,2}:\d{2}:\d{2})/);
+  return { savedOn: m[1], recommended: m[2], pace: pace ? pace[1] : undefined, speedKmh: speed ? +speed[1] : undefined, intensityFactor: ifm ? +ifm[1] : undefined, range: range ? [range[1], range[2]] : undefined };
+}
+function snapshotLine(today, p, isRide) {
+  if (isRide) {
+    const rows = p.cyclingPrediction || [];
+    if (!rows.length) return null;
+    const rec = rows.find((x) => /추천/.test(x.label)) || rows[Math.min(1, rows.length - 1)];
+    const times = rows.map((x) => parseHm(x.time)).filter(Boolean).sort((a, b) => a - b);
+    return `[YMC 예측 ${today}] 추천 ${minText(parseHm(rec.time))} · ${rec.avgSpeedKmh}km/h · IF ${rec.intensityFactor}` + (times.length > 1 ? ` | 범위 ${minText(times[0])}–${minText(times[times.length - 1])}` : '');
+  }
+  const rows = p.prediction || [];
+  const rec = rows.find((x) => x.recommended);
+  if (!rec) return null;
+  const times = rows.map((x) => parseClock(x.time)).filter(Boolean).sort((a, b) => a - b);
+  return `[YMC 예측 ${today}] 추천 ${rec.time} · ${rec.pace}/km` + (times.length > 1 ? ` | 범위 ${minText(times[0])}–${minText(times[times.length - 1])}` : '');
+}
+// 대회 전날·당일에만 저장 (이미 전날 이후에 저장된 게 있으면 그대로 둠, 대회가 지나면 절대 안 건드림)
+async function maybeSaveSnapshot(ev, race, p, today) {
+  if (!(race.daysUntil >= 0 && race.daysUntil <= 1)) return { saved: false, reason: 'only saved on the race eve or race day' };
+  const prev = eventSnapshot(ev);
+  if (prev && prev.savedOn >= addDays(race.date, -1)) return { saved: false, reason: 'already saved', snapshot: prev };
+  const line = snapshotLine(today, p, race.sport === 'cycling' || race.sport === 'mtb');
+  if (!line) return { saved: false, reason: 'no prediction to save' };
+  const old = String(ev.description || '');
+  const desc = (SNAP_RE.test(old) ? old.replace(/\[YMC 예측 [^\n]*/, line) : (old.trim() ? old.replace(/\s+$/, '') + '\n' : '') + line);
+  await icuPut(`${athletePath()}/events/${ev.id}`, { description: desc });
+  ev.description = desc;
+  return { saved: true, snapshot: eventSnapshot({ description: desc }) };
+}
+
 export const daysBetween = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
 
 export function toRace(e, today) {
@@ -156,7 +195,7 @@ export function toRace(e, today) {
     eventId: e.id, date, name: e.name || null,
     priority: String(e.category || '').replace('RACE_', '') || null,
     type: e.type || null, sport: RACE_SPORT[e.type] || null,
-    distanceKm: eventKm(e), goalTime: eventGoal(e), elevationGainM: eventGain(e), officialTime: eventResult(e),
+    distanceKm: eventKm(e), goalTime: eventGoal(e), elevationGainM: eventGain(e), officialTime: eventResult(e), savedPrediction: eventSnapshot(e) || undefined,
     daysUntil: DATE_RE.test(date) ? daysBetween(today, date) : null,
   };
 }
@@ -206,6 +245,11 @@ export async function pastRaceReview(race, acts) {
   else if (stopHeavy && !officialMin) out.notes.push(`경과 ${minText(elapsed)} 중 이동 ${minText(moving)} — 정지·켜둔 시간이 길어서 이동 시간 기준으로 비교`);
   if (!distMatches && !officialMin) out.notes.push(`기록 거리 ${act.km}km ≠ 대회 거리 ${race.distanceKm}km (${distOffPct > 0 ? '+' : ''}${distOffPct}%) — 기록 일부가 빠졌거나 코스가 달라서 완주 시간 비교는 하지 않고 ${isRide ? '속도' : '페이스'}만 비교`);
 
+  // 대회 전에 저장해 둔 예측이 있으면 그게 1순위 비교 기준
+  if (race.savedPrediction) {
+    const sp = race.savedPrediction, pm = parseClock(sp.recommended);
+    out.savedPrediction = { ...sp, errorMin: pm && actualMin ? +(actualMin - pm).toFixed(1) : null, note: 'prediction saved in the race description before the race; errorMin = actual − saved (+ = slower)' };
+  }
   // 대회 전날까지의 데이터로 YMC 예측을 다시 계산 (그때 앱이 냈을 예측)
   if (race.sport && raceKm) {
     try {
@@ -375,12 +419,20 @@ export async function getRaces(args = {}) {
   const races = raceEvents.map((e) => toRace(e, today)).sort((a, b) => a.date.localeCompare(b.date));
   const upcoming = races.filter((r) => r.daysUntil >= 0), past = races.filter((r) => r.daysUntil < 0).reverse();
 
-  // 다음 대회: 지금 기준 예측
-  if (args.predict_upcoming !== false && upcoming[0] && upcoming[0].sport && upcoming[0].distanceKm) {
-    const r = upcoming[0];
+  // 다가오는 대회: 60일 안의 대회(최대 3개)를 지금 기준으로 예측, 전날·당일이면 예측을 설명란에 저장
+  const evById = new Map(raceEvents.map((e) => [e.id, e]));
+  const toPredict = args.predict_upcoming === false ? [] : upcoming.filter((r) => r.sport && r.distanceKm && r.daysUntil <= 60).slice(0, 3);
+  for (const r of toPredict) {
     try {
       const p = await runPrediction({ sport: r.sport, distance_km: r.distanceKm, goal_time: r.goalTime || undefined, elevation_gain_m: r.elevationGainM ?? undefined }, null);
       r.prediction = { asOf: p.asOf, rows: p.prediction, cycling: p.cyclingPrediction, goal: p.goal, readinessPct: p.readiness && p.readiness.scorePct, durability: p.durability && p.durability.label, condition: p.condition && p.condition.label };
+      if (args.save_snapshots !== false) {
+        try {
+          const s = await maybeSaveSnapshot(evById.get(r.eventId), r, p, today);
+          if (s.snapshot) r.savedPrediction = s.snapshot;
+          if (s.saved) r.snapshotSaved = true;
+        } catch (e) { r.snapshotError = e instanceof UpstreamError ? `Intervals.icu에 저장 실패 (${e.status})` : (e.message || String(e)); }
+      }
     } catch (e) { r.prediction = { error: e.message || String(e) }; }
   }
   // 지난 대회: 예측 대비 실제
@@ -397,6 +449,7 @@ export async function getRaces(args = {}) {
     upcoming, past,
     notes: [
       'Distances come from the Intervals.icu calendar. In a race description, "목표 h:mm:ss" sets a goal, "기록 h:mm:ss" the official finish time (used as the actual result) and "고도 1300" / "D+1300" the course elevation gain.',
+      'On the race eve / race day the current YMC prediction is saved into the race description as "[YMC 예측 date] 추천 h:mm:ss …"; after the race it is the primary prediction-vs-actual reference.',
       ...(missing.length ? [`${missing.length} race(s) have no distance in Intervals.icu; fields present: ${[...new Set(missing.flatMap((e) => Object.keys(e)))].sort().join(', ')}`] : []),
     ],
   };
