@@ -638,6 +638,12 @@ export function RacesPanel(props) {
                 return <div style={{fontFamily:"monospace",fontSize:12,color:C.text,marginTop:6}}>YMC 예측 <span style={{color:C.accent,fontWeight:700}}>{cr.time}</span> ({cr.avgSpeedKmh}km/h · IF {cr.intensityFactor}) <span style={{color:C.muted,fontSize:10}}>범위 {p.cycling[p.cycling.length-1].time} ~ {p.cycling[0].time}</span></div>;
               })()}
               {p && p.readinessPct!=null && <div style={{fontFamily:"monospace",fontSize:10,color:C.muted,marginTop:2}}>준비도 {p.readinessPct}% · 내구성 {p.durability||"—"} · {String(p.condition||"컨디션 —").indexOf("컨디션")===0 ? p.condition : "컨디션 "+p.condition}</div>}
+              {r.sport==="road_run" && (
+                <div style={{fontFamily:"monospace",fontSize:10,color:r.vdot?C.muted:C.gold,marginTop:2}}>
+                  {r.vdot ? "VDOT "+r.vdot+(r.age?" · 나이 "+r.age:"")+" 반영"+(r.profileSaved?" (프로필 값을 캘린더 설명란에 저장)":"") : "⚠ VDOT 없음 — 프로필에 VDOT을 넣으면 앱 예측과 같은 기준으로 계산돼요"}
+                </div>
+              )}
+              {r.profileError && <div style={{fontFamily:"monospace",fontSize:10,color:C.red,marginTop:2}}>{r.profileError}</div>}
               {r.savedPrediction ? (
                 <div style={{fontFamily:"monospace",fontSize:10,color:C.accent,marginTop:2}}>📌 대회 전 예측 저장됨 ({fmtDate(r.savedPrediction.savedOn)}) — 추천 {r.savedPrediction.recommended}{r.snapshotSaved ? " · 방금 캘린더 설명란에 저장" : ""}</div>
               ) : r.daysUntil > 1 ? (
@@ -1189,7 +1195,7 @@ export default function App() {
       setSecret(s.trim());
     }
     setRacesState({loading:true});
-    try { setRacesState({data: await fetchRaces()}); }
+    try { setRacesState({data: await fetchRaces(profile)}); }
     catch(e) { if (e instanceof UnauthorizedError) setSecret(""); setRacesState({error: e.message || "불러오기 실패"}); }
   }
   // 🎯 예측 탭을 처음 열 때 한 번 자동으로 불러옴 (비밀키가 저장돼 있을 때만)

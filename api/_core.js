@@ -134,6 +134,25 @@ export function eventGoal(e) {
   const m = String(e.description || '').match(/(?:목표|goal|target)\s*(?:기록|시간|time)?\s*[:：]?\s*(\d{1,2}:\d{2}(?::\d{2})?)/i);
   return m ? m[1] : null;
 }
+// 설명란의 "VDOT 38.3" / "나이 41" — 앱 프로필에만 있던 값을 서버(카드·자동 저장·커넥터)도 같이 쓰게 함
+export function eventVdot(e) {
+  const m = String(e.description || '').match(/VDOT\s*[:：]?\s*(\d{2}(?:\.\d)?)/i);
+  const v = m ? parseFloat(m[1]) : null;
+  return v >= 20 && v <= 90 ? v : null;
+}
+export function eventAge(e) {
+  const m = String(e.description || '').match(/나이\s*[:：]?\s*(\d{2})/);
+  return m ? parseInt(m[1], 10) : null;
+}
+// 대회 설명란에 "VDOT x · 나이 y" 한 줄을 넣거나 바꿈 (다른 줄은 그대로)
+function withProfileLine(desc, vdot, age) {
+  const line = `VDOT ${vdot}` + (age ? ` · 나이 ${age}` : '');
+  const lines = String(desc || '').split('\n');
+  const i = lines.findIndex((l) => /^\s*VDOT\s*[:：]?\s*\d/i.test(l));
+  if (i >= 0) lines[i] = line; else lines.push(line);
+  return lines.filter((l, k) => l.trim() || k < lines.length - 1).join('\n').replace(/^\n+/, '');
+}
+
 // 설명란의 획득고도: "고도 1300", "획득고도 1,300m", "D+1300", "1300m↑"
 export function eventGain(e) {
   const t = String(e.description || '').replace(/(\d),(\d{3})/g, '$1$2');
@@ -196,6 +215,7 @@ export function toRace(e, today) {
     priority: String(e.category || '').replace('RACE_', '') || null,
     type: e.type || null, sport: RACE_SPORT[e.type] || null,
     distanceKm: eventKm(e), goalTime: eventGoal(e), elevationGainM: eventGain(e), officialTime: eventResult(e), savedPrediction: eventSnapshot(e) || undefined,
+    vdot: eventVdot(e) || undefined, age: eventAge(e) || undefined,
     daysUntil: DATE_RE.test(date) ? daysBetween(today, date) : null,
   };
 }
@@ -253,7 +273,7 @@ export async function pastRaceReview(race, acts) {
   // 대회 전날까지의 데이터로 YMC 예측을 다시 계산 (그때 앱이 냈을 예측)
   if (race.sport && raceKm) {
     try {
-      const p = await runPrediction({ sport: race.sport, distance_km: raceKm, elevation_gain_m: race.elevationGainM ?? undefined }, addDays(race.date, -1));
+      const p = await runPrediction({ sport: race.sport, distance_km: raceKm, elevation_gain_m: race.elevationGainM ?? undefined, vdot: race.vdot, age: race.age }, addDays(race.date, -1));
       let rows;
       if (isRide) {
         rows = (p.cyclingPrediction || []).map((x) => {
@@ -422,9 +442,23 @@ export async function getRaces(args = {}) {
   // 다가오는 대회: 60일 안의 대회(최대 3개)를 지금 기준으로 예측, 전날·당일이면 예측을 설명란에 저장
   const evById = new Map(raceEvents.map((e) => [e.id, e]));
   const toPredict = args.predict_upcoming === false ? [] : upcoming.filter((r) => r.sport && r.distanceKm && r.daysUntil <= 60).slice(0, 3);
+  // 앱이 보낸 프로필 VDOT(·나이)을 다가오는 로드 레이스 설명란에 기록 → 앱을 안 여는 자동 저장·커넥터도 같은 값 사용
+  const appVdot = parseFloat(args.vdot) >= 20 && parseFloat(args.vdot) <= 90 ? Math.round(parseFloat(args.vdot) * 10) / 10 : null;
+  const appAge = parseInt(args.age, 10) >= 10 && parseInt(args.age, 10) <= 100 ? parseInt(args.age, 10) : null;
+  if (appVdot && args.save_profile !== false) {
+    for (const r of upcoming.filter((x) => x.sport === 'road_run' && x.daysUntil <= 60)) {
+      if (r.vdot === appVdot && (r.age || null) === (appAge || r.age || null)) continue;
+      const ev = evById.get(r.eventId);
+      try {
+        const desc = withProfileLine(ev.description, appVdot, appAge || r.age);
+        await icuPut(`${athletePath()}/events/${ev.id}`, { description: desc });
+        ev.description = desc; r.vdot = appVdot; if (appAge) r.age = appAge; r.profileSaved = true;
+      } catch (e) { r.profileError = e instanceof UpstreamError ? `Intervals.icu에 VDOT 저장 실패 (${e.status})` : (e.message || String(e)); }
+    }
+  }
   for (const r of toPredict) {
     try {
-      const p = await runPrediction({ sport: r.sport, distance_km: r.distanceKm, goal_time: r.goalTime || undefined, elevation_gain_m: r.elevationGainM ?? undefined }, null);
+      const p = await runPrediction({ sport: r.sport, distance_km: r.distanceKm, goal_time: r.goalTime || undefined, elevation_gain_m: r.elevationGainM ?? undefined, vdot: r.sport === 'road_run' ? r.vdot : undefined, age: r.age, gender: args.gender === 'female' ? 'female' : undefined }, null);
       r.prediction = { asOf: p.asOf, rows: p.prediction, cycling: p.cyclingPrediction, goal: p.goal, readinessPct: p.readiness && p.readiness.scorePct, durability: p.durability && p.durability.label, condition: p.condition && p.condition.label };
       if (args.save_snapshots !== false) {
         try {
@@ -449,6 +483,7 @@ export async function getRaces(args = {}) {
     upcoming, past,
     notes: [
       'Distances come from the Intervals.icu calendar. In a race description, "목표 h:mm:ss" sets a goal, "기록 h:mm:ss" the official finish time (used as the actual result) and "고도 1300" / "D+1300" the course elevation gain.',
+      'Road races use the VDOT (and age) written in the race description as "VDOT 38.3 · 나이 41"; the app writes it there from its profile when it loads races.',
       'On the race eve / race day the current YMC prediction is saved into the race description as "[YMC 예측 date] 추천 h:mm:ss …"; after the race it is the primary prediction-vs-actual reference.',
       ...(missing.length ? [`${missing.length} race(s) have no distance in Intervals.icu; fields present: ${[...new Set(missing.flatMap((e) => Object.keys(e)))].sort().join(', ')}`] : []),
     ],

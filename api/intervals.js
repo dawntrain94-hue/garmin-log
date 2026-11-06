@@ -176,7 +176,8 @@ export default async function handler(req, res) {
 
     if (action === 'races') {
       try {
-        return res.status(200).json(await getRaces({ past_limit: 3 }));
+        // 앱 프로필의 VDOT·나이·성별 → 다가오는 로드 레이스 설명란에 기록하고 예측에 사용
+        return res.status(200).json(await getRaces({ past_limit: 3, vdot: req.query.vdot, age: req.query.age, gender: req.query.gender }));
       } catch (e) {
         if (e instanceof ToolError) return res.status(422).json({ error: e.message });
         if (e instanceof UpstreamError) return res.status(502).json({ error: e.message, upstreamStatus: e.status });

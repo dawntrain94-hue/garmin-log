@@ -71,8 +71,12 @@ export function fetchSplits(id) {
 }
 
 // Intervals.icu 캘린더 대회 (다가오는 대회 예측, 지난 대회 예측 대비 실제)
-export function fetchRaces() {
-  return call({ action: "races" });
+export function fetchRaces(profile) {
+  var q = { action: "races" };
+  if (profile && parseFloat(profile.vdot) > 0) q.vdot = String(profile.vdot);
+  if (profile && parseInt(profile.age, 10) > 0) q.age = String(profile.age);
+  if (profile && profile.gender) q.gender = profile.gender;
+  return call(q);
 }
 
 export function fetchIntervalsProfile() {

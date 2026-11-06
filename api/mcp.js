@@ -191,6 +191,8 @@ const TOOLS = [
         days_ahead: { type: 'integer', minimum: 0, maximum: 730, default: 365 },
         past_limit: { type: 'integer', minimum: 0, maximum: 10, default: 3, description: 'How many of the most recent past races get a full prediction-vs-actual review' },
         predict_upcoming: { type: 'boolean', default: true, description: 'Run the YMC prediction for upcoming races within 60 days (max 3)' },
+        vdot: { type: 'number', minimum: 20, maximum: 90, description: 'VDOT to use for upcoming road races; also written into their descriptions as "VDOT x" so the race-eve snapshot uses it. Omit to use what the descriptions already say.' },
+        age: { type: 'integer', minimum: 10, maximum: 100 },
         save_snapshots: { type: 'boolean', default: true, description: 'On the race eve / race day, save the current prediction into the race description in Intervals.icu (once; never after the race)' },
       },
     },
