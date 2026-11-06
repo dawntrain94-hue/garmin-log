@@ -107,6 +107,28 @@ function parseActivityGPX(text) {
   };
 }
 
+// GPS 경로가 없는 활동(트레드밀·실내)은 Intervals.icu 요약값으로 기록을 만듦
+// 거리는 워치 자체 측정(트레드밀은 손목 가속도계) 그대로 — 실제 훈련량이라 예측·내구성 계산에 포함
+function statsFromSummary(meta) {
+  var km = meta.distance > 0 ? meta.distance / 1000 : 0;
+  var sec = meta.movingTime || meta.elapsedTime || 0;
+  if (!(km > 0.2) || !(sec > 60)) return null;
+  return {
+    name: meta.name || "활동", gpxType: meta.type || "",
+    activityDate: String(meta.start || "").slice(0, 10),
+    distanceKm: +km.toFixed(2),
+    elevationGain: 0, elevationLoss: 0,
+    durationMin: Math.round(sec / 60),
+    avgPaceMinKm: +((sec / 60) / km).toFixed(2),
+    avgHR: meta.avgHr ? Math.round(meta.avgHr) : null,
+    maxHR: meta.maxHr ? Math.round(meta.maxHr) : null,
+    avgPower: meta.avgPower ? Math.round(meta.avgPower) : null,
+    normalizedPower: meta.normalizedPower ? Math.round(meta.normalizedPower) : null,
+    points: 0, elevProfile: null, powerBins: null,
+    summaryOnly: true, // GPS 없음 — 요약값만
+  };
+}
+
 // ── VDOT (Jack Daniels) 공식 ────────────────────────────────────────────────
 // Daniels-Gilbert 공식: VDOT = (-4.6+0.182258×v+0.000104×v²) / (0.8+0.1894393×e^(-0.012778×t)+0.2989558×e^(-0.1932605×t))
 // v = m/min, t = 분
@@ -999,7 +1021,12 @@ export default function App() {
     var dates = activities.map(function(a){return a.activityDate;}).filter(Boolean).sort();
     var from = new Date();
     if (daysBack) from.setDate(from.getDate() - daysBack);
-    else if (dates.length) { from = new Date(dates[dates.length-1] + "T00:00:00"); from.setDate(from.getDate() - 1); }
+    else if (dates.length) {
+      from = new Date(dates[dates.length-1] + "T00:00:00"); from.setDate(from.getDate() - 1);
+      // 예전에 GPS가 없어서 못 가져온 트레드밀 기록도 다시 보도록 최소 6주(예측 기간)는 확인 — 이미 있는 기록은 다시 받지 않음
+      var six = new Date(); six.setDate(six.getDate() - 42);
+      if (six < from) from = six;
+    }
     else from.setDate(from.getDate() - 60);
     var oldest = isoDate(from), newest = isoDate(new Date());
 
@@ -1039,7 +1066,9 @@ export default function App() {
         var stats = null, err = "";
         try { stats = parseActivityGPX(await fetchGpx(meta.id)); }
         catch(e) { if (e instanceof UnauthorizedError) throw e; err = e.message || "다운로드 실패"; }
-        if (!stats || !stats.distanceKm) { failed++; logItem(meta, "fail", err || "GPS 경로 없음 (실내 운동 등)"); continue; }
+        var fromSummary = false;
+        if ((!stats || !stats.distanceKm) && !meta.refresh) { stats = statsFromSummary(meta); fromSummary = !!stats; }
+        if (!stats || !stats.distanceKm) { failed++; logItem(meta, "fail", err || "GPS 경로도 거리 기록도 없음"); continue; }
         if (meta.start) stats.activityDate = String(meta.start).slice(0, 10); // 현지 날짜 기준
         if (meta.name) stats.name = meta.name;
         if (meta.refresh) {
@@ -1063,7 +1092,7 @@ export default function App() {
           source: "intervals",
         }, stats)));
         added++;
-        logItem(meta, "ok", "");
+        logItem(meta, "ok", fromSummary ? "GPS 없음 — 요약값(거리·시간·심박)으로 가져옴" : "");
       }
       var report = { at: new Date().toISOString(), range: oldest + " ~ " + newest, total: rawList.length, known: list.filter(function(m){ return known[m.id]; }).length, items: log };
       setSyncLog(report);

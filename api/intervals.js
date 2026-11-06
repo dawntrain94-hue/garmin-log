@@ -105,6 +105,7 @@ export default async function handler(req, res) {
         elevationGain: a.total_elevation_gain,
         load: a.icu_training_load,
         avgPower: a.icu_average_watts || null, // 중복(기기 2대 동시 기록) 판단용
+        normalizedPower: a.icu_weighted_avg_watts || null,
         device: a.device_name,
         trainer: a.trainer === true,       // 실내 훈련 (고도 보정용)
         source: a.source,
