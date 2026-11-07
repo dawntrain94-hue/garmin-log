@@ -704,6 +704,7 @@ export function RacesPanel(props) {
                     {rv.savedPrediction && (
                       <div>
                         📌 대회 전 예측 {rv.savedPrediction.recommended} <span style={{color:C.muted,fontSize:10}}>({fmtDate(rv.savedPrediction.savedOn)} 저장)</span>
+                        {rv.savedPrediction.courseChanged && <span style={{color:C.muted,fontSize:10}}> · {rv.savedPrediction.distanceKm}km 기준이라 비교 안 함</span>}
                         {rv.savedPrediction.errorMin!=null && <span> · 오차 <span style={{color:errCol(rv.savedPrediction.errorMin,5),fontWeight:700}}>{rv.savedPrediction.errorMin>0?"+":""}{rv.savedPrediction.errorMin}분</span></span>}
                       </div>
                     )}

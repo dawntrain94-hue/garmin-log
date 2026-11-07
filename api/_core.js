@@ -176,28 +176,33 @@ export function eventSnapshot(e) {
   if (!m) return null;
   const rest = m[3] || '';
   const pace = rest.match(/(\d{1,2}:\d{2})\/km/), speed = rest.match(/([\d.]+)km\/h/), ifm = rest.match(/IF\s*([\d.]+)/), range = rest.match(/범위\s*(\d{1,2}:\d{2}:\d{2})[–-](\d{1,2}:\d{2}:\d{2})/);
-  return { savedOn: m[1], recommended: m[2], pace: pace ? pace[1] : undefined, speedKmh: speed ? +speed[1] : undefined, intensityFactor: ifm ? +ifm[1] : undefined, range: range ? [range[1], range[2]] : undefined };
+  // 예측했던 거리: "· 102km" (예전 줄은 속도×시간 또는 시간÷페이스로 추정)
+  const km = rest.match(/·\s*([\d.]+)km(?!\/h)/), t = parseClock(m[2]);
+  let distanceKm = km ? +km[1] : null;
+  if (!distanceKm && t && speed) distanceKm = +(+speed[1] * t / 60).toFixed(1);
+  if (!distanceKm && t && pace) distanceKm = +(t / parseClock(pace[1])).toFixed(1);
+  return { savedOn: m[1], recommended: m[2], distanceKm: distanceKm || undefined, distanceInferred: !km && distanceKm ? true : undefined, pace: pace ? pace[1] : undefined, speedKmh: speed ? +speed[1] : undefined, intensityFactor: ifm ? +ifm[1] : undefined, range: range ? [range[1], range[2]] : undefined };
 }
-function snapshotLine(today, p, isRide) {
+function snapshotLine(today, p, isRide, km) {
   if (isRide) {
     const rows = p.cyclingPrediction || [];
     if (!rows.length) return null;
     const rec = rows.find((x) => /추천/.test(x.label)) || rows[Math.min(1, rows.length - 1)];
     const times = rows.map((x) => parseHm(x.time)).filter(Boolean).sort((a, b) => a - b);
-    return `[YMC 예측 ${today}] 추천 ${minText(parseHm(rec.time))} · ${rec.avgSpeedKmh}km/h · IF ${rec.intensityFactor}` + (times.length > 1 ? ` | 범위 ${minText(times[0])}–${minText(times[times.length - 1])}` : '');
+    return `[YMC 예측 ${today}] 추천 ${minText(parseHm(rec.time))} · ${km}km · ${rec.avgSpeedKmh}km/h · IF ${rec.intensityFactor}` + (times.length > 1 ? ` | 범위 ${minText(times[0])}–${minText(times[times.length - 1])}` : '');
   }
   const rows = p.prediction || [];
   const rec = rows.find((x) => x.recommended);
   if (!rec) return null;
   const times = rows.map((x) => parseClock(x.time)).filter(Boolean).sort((a, b) => a - b);
-  return `[YMC 예측 ${today}] 추천 ${rec.time} · ${rec.pace}/km` + (times.length > 1 ? ` | 범위 ${minText(times[0])}–${minText(times[times.length - 1])}` : '');
+  return `[YMC 예측 ${today}] 추천 ${rec.time} · ${km}km · ${rec.pace}/km` + (times.length > 1 ? ` | 범위 ${minText(times[0])}–${minText(times[times.length - 1])}` : '');
 }
 // 대회 전날·당일에만 저장 (이미 전날 이후에 저장된 게 있으면 그대로 둠, 대회가 지나면 절대 안 건드림)
 async function maybeSaveSnapshot(ev, race, p, today) {
   if (!(race.daysUntil >= 0 && race.daysUntil <= 1)) return { saved: false, reason: 'only saved on the race eve or race day' };
   const prev = eventSnapshot(ev);
   if (prev && prev.savedOn >= addDays(race.date, -1)) return { saved: false, reason: 'already saved', snapshot: prev };
-  const line = snapshotLine(today, p, race.sport === 'cycling' || race.sport === 'mtb');
+  const line = snapshotLine(today, p, race.sport === 'cycling' || race.sport === 'mtb', race.distanceKm);
   if (!line) return { saved: false, reason: 'no prediction to save' };
   const old = String(ev.description || '');
   const desc = (SNAP_RE.test(old) ? old.replace(/\[YMC 예측 [^\n]*/, line) : (old.trim() ? old.replace(/\s+$/, '') + '\n' : '') + line);
@@ -268,7 +273,12 @@ export async function pastRaceReview(race, acts) {
   // 대회 전에 저장해 둔 예측이 있으면 그게 1순위 비교 기준
   if (race.savedPrediction) {
     const sp = race.savedPrediction, pm = parseClock(sp.recommended);
-    out.savedPrediction = { ...sp, errorMin: pm && actualMin ? +(actualMin - pm).toFixed(1) : null, note: 'prediction saved in the race description before the race; errorMin = actual − saved (+ = slower)' };
+    // 대회 직전에 코스가 바뀐 경우(예: 그란폰도 → 메디오 컷오프) 저장된 예측은 다른 거리 기준이라 비교하지 않음
+    const courseChanged = sp.distanceKm && raceKm && Math.abs(sp.distanceKm / raceKm - 1) > 0.05;
+    out.savedPrediction = courseChanged
+      ? { ...sp, errorMin: null, courseChanged: true, note: `saved prediction was for ${sp.distanceKm}km, the race is now ${raceKm}km — not compared` }
+      : { ...sp, errorMin: pm && actualMin ? +(actualMin - pm).toFixed(1) : null, note: 'prediction saved in the race description before the race; errorMin = actual − saved (+ = slower)' };
+    if (courseChanged) out.notes.push(`저장된 대회 전 예측은 ${sp.distanceKm}km 기준 — 거리가 ${raceKm}km로 바뀌어서 비교하지 않음`);
   }
   // 대회 전날까지의 데이터로 YMC 예측을 다시 계산 (그때 앱이 냈을 예측)
   if (race.sport && raceKm) {
