@@ -329,7 +329,7 @@ async function handleMessage(msg) {
     case 'ping': return isNotification ? null : rpcResult(msg.id, {});
     case 'tools/list':
       return rpcResult(msg.id, {
-        tools: TOOLS.map((t) => ({ name: t.name, title: t.title, description: t.description, inputSchema: t.inputSchema, annotations: { readOnlyHint: true, openWorldHint: false } })),
+        tools: TOOLS.map((t) => ({ name: t.name, title: t.title, description: t.description, inputSchema: t.inputSchema, annotations: { readOnlyHint: t.name !== 'add_planned_workouts', destructiveHint: false, idempotentHint: t.name === 'add_planned_workouts' ? true : undefined, openWorldHint: false } })),
       });
     case 'tools/call': {
       const tool = TOOLS.find((t) => t.name === p.name);
