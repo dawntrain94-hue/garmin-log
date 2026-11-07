@@ -1,4 +1,4 @@
-// YMC MCP server (Streamable HTTP, stateless, read-only) — lets Claude read your training data.
+// YMC MCP server (Streamable HTTP, stateless, read-only except add_planned_workouts) — lets Claude read your training data.
 //
 // Add in claude.ai → Customize → Connectors → Add custom connector
 //   URL:    https://garmin-log.vercel.app/api/mcp
@@ -8,7 +8,7 @@
 // recovery numbers use the same code as the YMC app (src/intensity.js, src/wellness.js).
 
 import {
-  DATE_RE, ID_RE, num, resolveAthlete, icuJson, icuGpxText, toWellness, toSettings,
+  DATE_RE, ID_RE, num, resolveAthlete, icuJson, icuPost, icuPut, icuGpxText, toWellness, toSettings,
   gpxPowerSeries, UpstreamError, normSecret,
 } from './_icu.js';
 import { buildPowerBins, sustainedMinutes } from '../src/intensity.js';
@@ -18,7 +18,7 @@ import { loadActivitySplits, SplitsError } from './_activitySplits.js';
 import { flatVenueReason } from '../src/elevation.js';
 import { predictRace, calcVDOT } from '../src/predict.js';
 
-const SERVER_INFO = { name: 'ymc-training', title: 'YMC 훈련 기록', version: '1.2.0' };
+const SERVER_INFO = { name: 'ymc-training', title: 'YMC 훈련 기록', version: '1.3.0' };
 const SUPPORTED_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const INSTRUCTIONS = [
   'YMC training data for one athlete (trail running, road running, cycling/granfondo, MTB), read live from Intervals.icu (synced from Garmin).',
@@ -197,6 +197,62 @@ const TOOLS = [
       },
     },
     async run(args) { return getRaces(args); },
+  },
+  {
+    name: 'add_planned_workouts',
+    title: '계획 훈련 캘린더 등록',
+    description: 'Create planned workouts in the athlete\'s Intervals.icu calendar (category WORKOUT, so they sync to the watch). Each item: date (YYYY-MM-DD, today to +90 days), name, description (free text: pace, heart rate, fueling), type (Run default, or Ride/Walk/WeightTraining), optional duration_min. Rest days can be added with type "Note" (category NOTE). Items whose name and date already exist as a workout/note are updated instead of duplicated, so re-running is safe. Never deletes anything. Only use when the athlete asked to put a plan in the calendar.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workouts: {
+          type: 'array', maxItems: 31,
+          items: {
+            type: 'object',
+            properties: {
+              date: { type: 'string', description: 'YYYY-MM-DD' },
+              name: { type: 'string', maxLength: 120 },
+              description: { type: 'string', maxLength: 4000 },
+              type: { type: 'string', enum: ['Run', 'Ride', 'Walk', 'WeightTraining', 'Note'], default: 'Run' },
+              duration_min: { type: 'number', minimum: 5, maximum: 600 },
+            },
+            required: ['date', 'name'],
+          },
+        },
+      },
+      required: ['workouts'],
+    },
+    async run(args) {
+      const list = Array.isArray(args.workouts) ? args.workouts : [];
+      if (!list.length) throw new ToolError('workouts가 비어 있어요');
+      const today = todayLocal();
+      const last = addDays(today, 90);
+      for (const w of list) {
+        if (!DATE_RE.test(String(w.date || '')) || w.date < today || w.date > last) throw new ToolError(`날짜가 범위를 벗어났어요 (오늘~+90일): ${w.date}`);
+        if (!String(w.name || '').trim()) throw new ToolError('name이 필요해요');
+      }
+      const dates = list.map((w) => w.date).sort();
+      const existing = await icuJson(`${athletePath()}/events?oldest=${dates[0]}&newest=${dates[dates.length - 1]}`);
+      const ex = Array.isArray(existing) ? existing : [];
+      const out = [];
+      for (const w of list) {
+        const isNote = w.type === 'Note';
+        const body = {
+          start_date_local: `${w.date}T00:00:00`,
+          category: isNote ? 'NOTE' : 'WORKOUT',
+          name: String(w.name).trim(),
+          description: String(w.description || ''),
+        };
+        if (!isNote) {
+          body.type = w.type || 'Run';
+          if (w.duration_min) body.moving_time = Math.round(w.duration_min * 60);
+        }
+        const hit = ex.find((e) => String(e.start_date_local || '').slice(0, 10) === w.date && e.category === body.category && e.name === body.name);
+        if (hit) { await icuPut(`${athletePath()}/events/${hit.id}`, body); out.push({ date: w.date, name: body.name, result: 'updated' }); }
+        else { const c = await icuPost(`${athletePath()}/events`, body); out.push({ date: w.date, name: body.name, result: 'created', id: c && c.id }); }
+      }
+      return { count: out.length, items: out };
+    },
   },
   {
     name: 'get_activity_splits',
