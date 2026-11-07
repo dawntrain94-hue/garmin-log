@@ -1,4 +1,4 @@
-// YMC MCP server (Streamable HTTP, stateless, read-only except add_planned_workouts) — lets Claude read your training data.
+// YMC MCP server (Streamable HTTP, stateless, read-only except add_/manage_planned_workouts) — lets Claude read your training data.
 //
 // Add in claude.ai → Customize → Connectors → Add custom connector
 //   URL:    https://garmin-log.vercel.app/api/mcp
@@ -8,7 +8,7 @@
 // recovery numbers use the same code as the YMC app (src/intensity.js, src/wellness.js).
 
 import {
-  DATE_RE, ID_RE, num, resolveAthlete, icuJson, icuPost, icuPut, icuGpxText, toWellness, toSettings,
+  DATE_RE, ID_RE, num, resolveAthlete, icuJson, icuPost, icuPut, icuDelete, icuGpxText, toWellness, toSettings,
   gpxPowerSeries, UpstreamError, normSecret,
 } from './_icu.js';
 import { buildPowerBins, sustainedMinutes } from '../src/intensity.js';
@@ -18,7 +18,7 @@ import { loadActivitySplits, SplitsError } from './_activitySplits.js';
 import { flatVenueReason } from '../src/elevation.js';
 import { predictRace, calcVDOT } from '../src/predict.js';
 
-const SERVER_INFO = { name: 'ymc-training', title: 'YMC 훈련 기록', version: '1.3.0' };
+const SERVER_INFO = { name: 'ymc-training', title: 'YMC 훈련 기록', version: '1.4.0' };
 const SUPPORTED_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const INSTRUCTIONS = [
   'YMC training data for one athlete (trail running, road running, cycling/granfondo, MTB), read live from Intervals.icu (synced from Garmin).',
@@ -34,6 +34,8 @@ const INSTRUCTIONS = [
 import {
   RIDE_TYPES, RUN_TYPES, r1, paceText, minText, TZ_OFFSET_MS, todayLocal, addDays, range, weekStart, ToolError, parseClock, athletePath, toActivity, fetchActivities, fetchSettings, mapLimit, rideSustained, RACE_SPORT, SPORT_TYPES, eventKm, eventGoal, eventGain, daysBetween, toRace, matchRaceActivity, pastRaceReview, runPrediction, getRaces,
 } from './_core.js';
+
+const WRITE_TOOLS = new Set(['add_planned_workouts', 'manage_planned_workouts']);
 
 // ── tools
 const TOOLS = [
@@ -255,6 +257,66 @@ const TOOLS = [
     },
   },
   {
+    name: 'manage_planned_workouts',
+    title: '계획 훈련 조회·수정·삭제',
+    description: 'List, edit or delete planned workouts and notes in the athlete\'s Intervals.icu calendar. Only events of category WORKOUT or NOTE dated today or later can be touched; races, past events and recorded activities are refused. action "list": events in a date range (default today to +30 days) with id, date, name, description. action "update": change date, name, description, duration_min of one event by id. action "delete": remove events by ids (max 31). Use after add_planned_workouts when the athlete wants the plan changed or removed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'update', 'delete'] },
+        oldest: { type: 'string', description: 'list: YYYY-MM-DD, default today' },
+        newest: { type: 'string', description: 'list: YYYY-MM-DD, default today+30' },
+        id: { type: 'integer', description: 'update: event id from list' },
+        ids: { type: 'array', items: { type: 'integer' }, maxItems: 31, description: 'delete: event ids from list' },
+        date: { type: 'string' },
+        name: { type: 'string', maxLength: 120 },
+        description: { type: 'string', maxLength: 4000 },
+        duration_min: { type: 'number', minimum: 5, maximum: 600 },
+      },
+      required: ['action'],
+    },
+    async run(args) {
+      const today = todayLocal();
+      const slim = (e) => ({ id: e.id, date: String(e.start_date_local || '').slice(0, 10), category: e.category, type: e.type || null, name: e.name, description: e.description || '', durationMin: e.moving_time ? Math.round(e.moving_time / 60) : null });
+      const guard = async (id) => {
+        const e = await icuJson(`${athletePath()}/events/${id}`);
+        const d = String(e.start_date_local || '').slice(0, 10);
+        if (!['WORKOUT', 'NOTE'].includes(e.category)) throw new ToolError(`계획 훈련/메모만 다룰 수 있어요 (id ${id}: ${e.category})`);
+        if (d < today) throw new ToolError(`지난 일정은 건드리지 않아요 (id ${id}: ${d})`);
+        return e;
+      };
+      if (args.action === 'list') {
+        const oldest = args.oldest && DATE_RE.test(args.oldest) ? args.oldest : today;
+        const newest = args.newest && DATE_RE.test(args.newest) ? args.newest : addDays(today, 30);
+        const ev = await icuJson(`${athletePath()}/events?oldest=${oldest}&newest=${newest}`);
+        return { events: (Array.isArray(ev) ? ev : []).filter((e) => ['WORKOUT', 'NOTE'].includes(e.category)).map(slim) };
+      }
+      if (args.action === 'update') {
+        if (!Number.isInteger(args.id)) throw new ToolError('id가 필요해요');
+        const e = await guard(args.id);
+        const body = {};
+        if (args.date) {
+          if (!DATE_RE.test(args.date) || args.date < today || args.date > addDays(today, 90)) throw new ToolError('날짜가 범위를 벗어났어요 (오늘~+90일)');
+          body.start_date_local = `${args.date}T00:00:00`;
+        }
+        if (typeof args.name === 'string' && args.name.trim()) body.name = args.name.trim();
+        if (typeof args.description === 'string') body.description = args.description;
+        if (args.duration_min && e.category === 'WORKOUT') body.moving_time = Math.round(args.duration_min * 60);
+        if (!Object.keys(body).length) throw new ToolError('바꿀 내용이 없어요');
+        await icuPut(`${athletePath()}/events/${args.id}`, body);
+        return { updated: args.id, changed: Object.keys(body) };
+      }
+      if (args.action === 'delete') {
+        const ids = Array.isArray(args.ids) ? args.ids : [];
+        if (!ids.length || !ids.every(Number.isInteger)) throw new ToolError('ids가 필요해요');
+        for (const id of ids) await guard(id); // 하나라도 막히면 아무것도 지우지 않음
+        for (const id of ids) await icuDelete(`${athletePath()}/events/${id}`);
+        return { deleted: ids };
+      }
+      throw new ToolError('action은 list, update, delete 중 하나예요');
+    },
+  },
+  {
     name: 'get_activity_splits',
     title: '구간 기록 · 심박 흐름',
     description: 'Per-km splits (default 1 km for runs, 5 km for rides) with pace/speed, avg & max HR, power, elevation; first-half vs second-half comparison with HR drift and aerobic decoupling % (pace:HR, or power:HR for rides with power; under ~5% means the effort was held aerobically); pace fade (first 3 vs last 3 splits); time in HR zones by % of LTHR. For runs also cadence (spm), stride length and, when the watch records them, ground contact time, vertical oscillation and vertical ratio per split, and formChange: peak vs last splits split into cadence and stride changes, plus the first km where stride stayed >3% shorter than at the peak (a sign of leg fatigue / form breakdown). Uses the watch\'s own distance stream, so treadmill runs work; stops are excluded. availableStreams lists what the recording contains. Use this to analyse pacing, fatigue, or how a session went.',
@@ -329,7 +391,7 @@ async function handleMessage(msg) {
     case 'ping': return isNotification ? null : rpcResult(msg.id, {});
     case 'tools/list':
       return rpcResult(msg.id, {
-        tools: TOOLS.map((t) => ({ name: t.name, title: t.title, description: t.description, inputSchema: t.inputSchema, annotations: { readOnlyHint: t.name !== 'add_planned_workouts', destructiveHint: false, idempotentHint: t.name === 'add_planned_workouts' ? true : undefined, openWorldHint: false } })),
+        tools: TOOLS.map((t) => ({ name: t.name, title: t.title, description: t.description, inputSchema: t.inputSchema, annotations: { readOnlyHint: !WRITE_TOOLS.has(t.name), destructiveHint: t.name === 'manage_planned_workouts', idempotentHint: t.name === 'add_planned_workouts' ? true : undefined, openWorldHint: false } })),
       });
     case 'tools/call': {
       const tool = TOOLS.find((t) => t.name === p.name);

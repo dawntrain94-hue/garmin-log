@@ -159,3 +159,10 @@ export function gpxPowerSeries(text) {
 
 // Same normalisation for the shared secret everywhere
 export const normSecret = (s) => String(s || '').normalize('NFKC').trim().replace(/^["']|["']$/g, '');
+
+// DELETE (계획 훈련 삭제 전용)
+export async function icuDelete(path) {
+  const r = await fetch(`${BASE}${path}`, { method: 'DELETE', headers: { Authorization: authHeader() } });
+  if (!r.ok) throw new UpstreamError(r.status);
+  return true;
+}
